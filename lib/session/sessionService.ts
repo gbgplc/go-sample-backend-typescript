@@ -97,8 +97,13 @@ export const sessionService = {
 
   async getState(sessionId: string, cookieToken: string | null | undefined): Promise<StateResponse> {
     const session = authorize(sessionId, cookieToken);
-    const goClient = await getGoClient();
-    return goClient.fetchState(session.goInstanceId);
+    // Locked the same as getInteraction/submitInteraction: a status poll is
+    // exactly the concurrent caller sessionMutex's own doc comment cites as
+    // the reason this lock exists.
+    return withSessionLock(session.id, async () => {
+      const goClient = await getGoClient();
+      return goClient.fetchState(session.goInstanceId);
+    });
   },
 
   async getRecord(sessionId: string, cookieToken: string | null | undefined): Promise<RecordResponse> {

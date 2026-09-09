@@ -21,6 +21,7 @@ export const meridianHealth: MarketConfig = {
     resourceId: 'b3d149562ec927dedcd76f3a6b7b0f82bbf7de818aebad3b3f7baa4c14940b6b@2g6no1nz',
     corsAllowedOrigins: ['http://localhost:3001'],
     consentUrl: 'https://meridianhealth.example/consent/record-access-v1',
+    consentTerms: 'I agree that Meridian Health may access and share my patient record with clinicians treating me.',
   },
   // The gbggo4-demo nonprod tenant. Still inert unless GO_MODE=live — set that,
   // and GBG_CLIENT_ID/SECRET/USERNAME/PASSWORD, in an untracked .env.local.

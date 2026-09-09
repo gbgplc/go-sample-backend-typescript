@@ -15,7 +15,6 @@
     "incremental": true,
     "noEmit": true,
     "allowJs": false,
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./*"]
     },

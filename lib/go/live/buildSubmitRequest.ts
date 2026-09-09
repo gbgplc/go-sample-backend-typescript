@@ -118,12 +118,12 @@ function place(subject: Record<string, unknown>, mapping: FieldMapping, value: u
  * required member is a URL. `consentUrl` must be a real, stable URL — Go
  * stores it so the exact terms consented to can be retrieved later.
  */
-function consentRecord(data: Record<string, unknown>, consentUrl: string): Record<string, unknown> {
+function consentRecord(data: Record<string, unknown>, consentUrl: string, consentTerms: string): Record<string, unknown> {
   const purpose = CONSENT_KEYS.filter((k) => data[k] === true).join(',');
   return {
     type: 'explicit',
     url: consentUrl,
-    terms: 'I agree that Meridian Health may access and share my patient record with clinicians treating me.',
+    terms: consentTerms,
     effectiveDate: new Date().toISOString(),
     purpose,
   };
@@ -133,24 +133,35 @@ export function buildSubmitRequest(
   instanceId: string,
   interactionId: string,
   data: Record<string, unknown> | undefined,
-  consentUrl: string
+  consentUrl: string,
+  consentTerms: string
 ): GoInteractionSubmitRequest {
   if (!data || Object.keys(data).length === 0) {
     return { instanceId, interactionId, participants: [], context: { subject: {} } };
   }
 
   const participants: { domainElementId: string }[] = [];
+  // A domain element is named once in the manifest no matter how many fields
+  // feed it (both sides of a document, first/last name, every address
+  // component) — Go's manifest is a set of elements this call covers, not one
+  // entry per source field.
+  const seenElements = new Set<string>();
+  const addParticipant = (domainElementId: string): void => {
+    if (seenElements.has(domainElementId)) return;
+    seenElements.add(domainElementId);
+    participants.push({ domainElementId });
+  };
   const subject: Record<string, unknown> = {};
 
   if (Object.keys(data).some((k) => CONSENT_KEYS.includes(k))) {
-    participants.push({ domainElementId: 'Consent' });
-    subject['consent'] = [consentRecord(data, consentUrl)];
+    addParticipant('Consent');
+    subject['consent'] = [consentRecord(data, consentUrl, consentTerms)];
   }
 
   for (const [key, value] of Object.entries(data)) {
     if (CONSENT_KEYS.includes(key)) continue;
     const mapping = forKey(key);
-    participants.push({ domainElementId: mapping.domainElementId });
+    addParticipant(mapping.domainElementId);
     place(subject, mapping, value);
   }
 

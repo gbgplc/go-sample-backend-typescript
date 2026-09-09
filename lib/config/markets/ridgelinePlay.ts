@@ -1,4 +1,5 @@
 import { MarketConfig } from '../types';
+import { DEFAULT_GO_CONFIG } from '../defaultGoConfig';
 
 /** No published Go journey yet — placeholder resourceId, no live go.* overrides, no screen plan. Matches application-ridgeline-play.yml. */
 export const ridgelinePlay: MarketConfig = {
@@ -13,14 +14,10 @@ export const ridgelinePlay: MarketConfig = {
     journeyName: 'GB player onboarding',
     resourceId: 'jny_gb_player_kyc@latest',
     corsAllowedOrigins: ['http://localhost:3002'],
-    consentUrl: 'https://meridianhealth.example/consent/record-access-v1',
+    consentUrl: 'https://ridgelineplay.example/consent/age-verification-v1',
+    consentTerms: 'I agree that Ridgeline Play may use my details to verify my age and identity.',
   },
-  go: {
-    region: 'eu',
-    authUrl: 'https://api.auth.gbgplc.com/as/token.oauth2',
-    scope: 'gbg.token',
-    grantType: 'client_credentials',
-  },
+  go: DEFAULT_GO_CONFIG,
   screenPlan: {
     stages: [],
     consentChecks: [],

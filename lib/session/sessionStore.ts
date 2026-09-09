@@ -13,9 +13,23 @@ globalForSessions.__sessionStore = sessions;
 
 const ttlMs = sessionConfig.ttlMinutes * 60 * 1000;
 
+/**
+ * Caps worst-case memory for abandoned sessions (each can hold a
+ * multi-MB base64 capture image in lastSubmittedData) the same way
+ * goApiClient bounds its own per-instance cache: LRU via delete+reinsert on
+ * every touch, oldest evicted first on overflow. An idle session is still
+ * expected to expire via its TTL well before this cap is ever reached; this
+ * is a backstop, not the primary eviction path.
+ */
+const MAX_SESSIONS = 10_000;
+
 export const sessionStore = {
   save(session: Session): void {
     sessions.set(session.id, session);
+    if (sessions.size > MAX_SESSIONS) {
+      const oldest = sessions.keys().next().value;
+      if (oldest !== undefined) sessions.delete(oldest);
+    }
   },
 
   /**
@@ -31,6 +45,8 @@ export const sessionStore = {
       return undefined;
     }
     session.touch();
+    sessions.delete(sessionId);
+    sessions.set(sessionId, session);
     return session;
   },
 

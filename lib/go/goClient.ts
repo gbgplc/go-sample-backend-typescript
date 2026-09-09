@@ -44,15 +44,18 @@ export interface GoClient {
  * @ConditionalOnProperty choosing which single bean implements GoClient.
  * Resolved lazily via dynamic import (rather than a static import of both
  * implementations) so a mock-mode deployment never has to load the live-mode
- * module graph, and vice versa.
+ * module graph, and vice versa. Stashed on globalThis, same as sessionStore
+ * and mockGoClient, so `next dev`'s hot-reload doesn't force a fresh
+ * dynamic import (and a fresh live-mode module graph, with its own caches)
+ * on every file save.
  */
-let cached: GoClient | undefined;
+const globalForGoClient = globalThis as unknown as { __goClient?: GoClient };
 
 export async function getGoClient(): Promise<GoClient> {
-  if (cached) return cached;
-  cached =
+  if (globalForGoClient.__goClient) return globalForGoClient.__goClient;
+  globalForGoClient.__goClient =
     goMode === 'live'
       ? (await import('./live/goApiClient')).goApiClient
       : (await import('./mock/mockGoClient')).mockGoClient;
-  return cached;
+  return globalForGoClient.__goClient;
 }

@@ -99,17 +99,28 @@ the password grant.
 
 ## Session auth
 
-`POST /v1/sessions` sets an HTTP-only, `SameSite=Lax` cookie scoped to
+`POST /v1/sessions` sets an HTTP-only, `SameSite=None` cookie scoped to
 `/v1/sessions`. Every other endpoint requires it to match the session it was
 issued for; missing or mismatched → `410 SESSION_EXPIRED` (the two failure
 cases — session not found, and cookie mismatch — are deliberately reported
-identically, so a client can't distinguish which check failed).
+identically, so a client can't distinguish which check failed). Every
+authenticated route reissues the cookie with a refreshed `maxAge` on success
+(`lib/session/sessionCookie.ts`, `lib/http/withSession.ts`), matching
+`sessionStore`'s own sliding idle timeout — otherwise an active session would
+keep itself alive server-side past a fixed client-side cookie expiry.
 
-The `Secure` flag is set from the *incoming* request's own scheme
-(`request.nextUrl.protocol === 'https:'`), not hardcoded true — a hardcoded
-`Secure` cookie is silently dropped by curl, PowerShell, and most non-browser
-HTTP clients over plain HTTP. To test with curl: `curl -c cookies.txt -b
-cookies.txt ...`.
+`SameSite=None`, not `Lax`: the front end and this API are different origins
+by design (see each market's `corsAllowedOrigins` and `middleware.ts`'s
+credentialed CORS handling), and `Lax` withholds a cookie from a cross-site
+fetch/XHR entirely — it's only sent on a top-level navigation. Browsers in
+turn require `Secure` whenever `SameSite=None`, so cross-origin cookie
+delivery only works once this API is served over HTTPS; the `Secure` flag is
+set from the *incoming* request's own scheme
+(`request.nextUrl.protocol === 'https:'`), not hardcoded true, so it turns on
+automatically once that's the case. A local http://-to-http:// pairing needs
+an HTTPS dev proxy in front of this API to exercise the cross-origin cookie
+path at all. To test with curl over plain HTTP (same-origin, no CORS in
+play): `curl -c cookies.txt -b cookies.txt ...`.
 
 ## Tests
 
@@ -155,7 +166,9 @@ npm test
 - **Live mode is structurally complete, not tenant-tested.** No real GBG Go
   credentials were available while porting this — same caveat the Java
   backend's own live mode carries for Northbank and Ridgeline Play.
-- **The default consent record URL** (`consentUrl` in each market's config,
-  read when submitting the Consent module) is a placeholder — override it in
-  `lib/config/markets/meridianHealth.ts` before any real submission, since Go
-  stores this URL as the auditable record of what was agreed to.
+- **The default consent record URL and terms text** (`consentUrl` and
+  `consentTerms` in each market's own config file under
+  `lib/config/markets/`) are placeholders — override them for real before any
+  real submission, since Go stores the URL as the auditable record of what
+  was agreed to, and the terms text is sent as the wording the user is
+  recorded as having consented to.

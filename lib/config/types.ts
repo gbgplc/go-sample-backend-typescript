@@ -41,6 +41,7 @@ export interface AppConfig {
   resourceId: string;
   corsAllowedOrigins: string[];
   consentUrl: string;
+  consentTerms: string;
 }
 
 export interface MarketConfig {

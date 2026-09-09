@@ -79,7 +79,12 @@ function toInteraction(step: ScenarioStep, id: string, stagePlan: StagePlanEntry
 
 function toRecord(step: ScenarioStep): RecordResponse {
   return {
-    decision: step.decision ?? 'pass',
+    // Every terminal fixture step sets `decision` explicitly; this fallback
+    // only fires if fetchRecord is called before the journey has reached a
+    // result step. 'refer' (not 'pass') matches the live client's own
+    // not-decided-yet default (defaultInteractionMapper's mapDecision) rather
+    // than fabricating a false pass.
+    decision: step.decision ?? 'refer',
     title: step.title,
     timing: step.timing ?? '',
     body: step.body ?? '',

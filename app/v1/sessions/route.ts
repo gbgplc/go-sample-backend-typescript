@@ -1,9 +1,9 @@
 import { NextRequest } from 'next/server';
-import { sessionConfig } from '@/lib/config';
 import { StartSessionRequest } from '@/lib/dto/types';
 import { handleRouteError } from '@/lib/http/errorHandling';
 import { jsonResponse } from '@/lib/http/jsonResponse';
 import { sessionService } from '@/lib/session/sessionService';
+import { setSessionCookie } from '@/lib/session/sessionCookie';
 
 /**
  * Starts a journey and returns the first interaction inline to save a round
@@ -29,18 +29,7 @@ export async function POST(request: NextRequest) {
     const started = await sessionService.startSession(body?.prefill, scenarioHint);
 
     const response = jsonResponse(started.body, 200);
-    // `secure` tracks the incoming request's own scheme rather than being
-    // hardcoded true: a browser's "localhost is a secure context" exception
-    // is Chromium-specific, and a Secure cookie issued over plain HTTP is
-    // silently dropped by curl and most other HTTP clients.
-    const secure = request.nextUrl.protocol === 'https:';
-    response.cookies.set(sessionConfig.cookieName, started.cookieToken, {
-      httpOnly: true,
-      secure,
-      sameSite: 'lax',
-      path: '/v1/sessions',
-      maxAge: sessionConfig.ttlMinutes * 60,
-    });
+    setSessionCookie(response, request, started.cookieToken);
     return response;
   } catch (err) {
     return handleRouteError(err);

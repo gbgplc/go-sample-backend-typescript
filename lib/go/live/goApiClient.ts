@@ -29,10 +29,15 @@ import { getAccessToken } from './goTokenService';
  * Last outstanding-elements list seen per Go instance, so a capture submit
  * can tell document from selfie without an extra fetch. Bounded (LRU-ish via
  * delete+reinsert) rather than unbounded — nothing here ever removes an
- * instance on session expiry or journey completion.
+ * instance on session expiry or journey completion. Stashed on globalThis,
+ * same as sessionStore and mockGoClient, so `next dev`'s hot-reload doesn't
+ * wipe it out from under an in-flight live-mode session on every file save.
  */
 const MAX_CACHED_INSTANCES = 10_000;
-const lastOutstandingByInstance = new Map<string, string[]>();
+const globalForGoApiClient = globalThis as unknown as { __lastOutstandingByInstance?: Map<string, string[]> };
+const lastOutstandingByInstance: Map<string, string[]> =
+  globalForGoApiClient.__lastOutstandingByInstance ?? new Map();
+globalForGoApiClient.__lastOutstandingByInstance = lastOutstandingByInstance;
 
 function rememberOutstanding(instanceId: string, outstanding: string[] | undefined): void {
   if (!outstanding) return;
@@ -173,7 +178,7 @@ export const goApiClient: GoClient = {
     await call(() =>
       authedFetch(
         'journey/interaction/submit',
-        buildSubmitRequest(instanceId, interactionId, payload, marketConfig.app.consentUrl)
+        buildSubmitRequest(instanceId, interactionId, payload, marketConfig.app.consentUrl, marketConfig.app.consentTerms)
       )
     );
     // The submit response only acknowledges receipt; the next screen comes
