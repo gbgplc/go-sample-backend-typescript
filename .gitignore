@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+*.log
+
+# Credentials. .env.example lists the variable names with no values and is
+# committed so a new checkout knows what to fill in — everything else here
+# stays untracked.
+.env
+.env.*
+!.env.example
+
+.DS_Store
