@@ -1,9 +1,7 @@
 import { MarketConfig } from '../types';
 
 /**
- * The only market with a published Go journey. Matches
- * application-meridian-health.yml, including the gbggo4-demo fabric nonprod
- * tenant's go.* overrides and its verified screen plan.
+ * Matches application-meridian-health.yml, including its verified screen plan.
  */
 export const meridianHealth: MarketConfig = {
   app: {
@@ -15,25 +13,30 @@ export const meridianHealth: MarketConfig = {
     accentSoft: '#C7EBD5',
     helpLine: 'Reception can verify you in person with the same documents.',
     journeyName: 'Patient record access',
-    // Published to Preview on the gbggo4-demo tenant, 2026-09-07. Pinned to an
-    // exact version rather than @latest: @latest costs a Journey-builder lookup
-    // on every start and doesn't pick up a publish predictably.
+    // Pinned to an exact version rather than @latest: @latest costs a
+    // Journey-builder lookup on every start and doesn't pick up a publish
+    // predictably.
     resourceId: 'b3d149562ec927dedcd76f3a6b7b0f82bbf7de818aebad3b3f7baa4c14940b6b@5ph3fkm5',
     corsAllowedOrigins: ['http://localhost:3001'],
     consentUrl: 'https://meridianhealth.example/consent/record-access-v1',
     consentTerms: 'I agree that Meridian Health may access and share my patient record with clinicians treating me.',
   },
-  // The gbggo4-demo nonprod tenant. Still inert unless GO_MODE=live — set that,
-  // and GBG_CLIENT_ID/SECRET/USERNAME/PASSWORD, in an untracked .env.local.
+  // The public GBG Go platform. Set GO_MODE=live and the two credentials in an
+  // untracked .env.local to use it; otherwise this is inert.
   //
-  // Note the two hosts differ: the Keycloak realm has no region segment, the
-  // API host does (-eu). That is not a typo.
+  // baseUrl is regional: swap `eu` for `us` or `au` to match the region your
+  // tenant was provisioned in, and set `region` to the same value.
+  //
+  // Running against a nonprod fabric tenant instead? It uses a Keycloak realm
+  // and the password grant, so override authUrl, baseUrl, grantType and scope,
+  // and supply username and password alongside the client credentials. Put
+  // that in a local override rather than here — this file ships to customers.
   go: {
     region: 'eu',
-    authUrl: 'https://gbggo4-demo.nonprod.fabric.gbgplatforms.com/auth/realms/go/protocol/openid-connect/token',
-    baseUrl: 'https://gbggo4-demo-eu.nonprod.fabric.gbgplatforms.com/v2/captain/',
-    grantType: 'password',
-    scope: 'openid',
+    authUrl: 'https://api.auth.gbgplc.com/as/token.oauth2',
+    baseUrl: 'https://eu.platform.go.gbgplc.com/v2/captain/',
+    grantType: 'client_credentials',
+    scope: 'gbg.token',
   },
   // Live-mode screens for this journey (defaultInteractionMapper): which
   // domain elements map to which screen, in collection order.
