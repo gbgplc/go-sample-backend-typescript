@@ -18,7 +18,7 @@ export const meridianHealth: MarketConfig = {
     // Published to Preview on the gbggo4-demo tenant, 2026-09-07. Pinned to an
     // exact version rather than @latest: @latest costs a Journey-builder lookup
     // on every start and doesn't pick up a publish predictably.
-    resourceId: 'b3d149562ec927dedcd76f3a6b7b0f82bbf7de818aebad3b3f7baa4c14940b6b@2g6no1nz',
+    resourceId: 'b3d149562ec927dedcd76f3a6b7b0f82bbf7de818aebad3b3f7baa4c14940b6b@5ph3fkm5',
     corsAllowedOrigins: ['http://localhost:3001'],
     consentUrl: 'https://meridianhealth.example/consent/record-access-v1',
     consentTerms: 'I agree that Meridian Health may access and share my patient record with clinicians treating me.',
@@ -36,15 +36,65 @@ export const meridianHealth: MarketConfig = {
     scope: 'openid',
   },
   // Live-mode screens for this journey (defaultInteractionMapper): which
-  // outstanding domain elements map to which screen, in collection order.
-  // Document before selfie (Facematch compares the selfie against the anchor
-  // image Document Classification produces), consent last. Copy matches
-  // apps/meridian-health/onboarding.config.ts so the live journey reads
-  // identically to the mock. No identity form: the journey has no FullName or
-  // DateOfBirth element — Data Verification was removed after it proved
-  // unable to source them on this tenant (HANDOFF.md).
+  // domain elements map to which screen, in collection order.
+  //
+  // Stages match against the interaction's `collects` list, which names 47
+  // refs across seven pages; `outstanding` is the narrower field and omits
+  // any element whose parent is optional, so matching on that alone drops
+  // pages the journey really has — consent, personal details, contact
+  // details and address among them.
+  //
+  // Order follows the journey's own pages: consent first, since a patient
+  // agrees to their record being opened before anything is collected, then
+  // identity and contact details, the address, and document before selfie
+  // because Facematch compares the selfie against the anchor image Document
+  // Classification produces. Copy matches
+  // apps/meridian-health/onboarding.config.ts so the live journey reads like
+  // the mock.
   screenPlan: {
     stages: [
+      {
+        name: 'consent',
+        kind: 'consent',
+        prefix: 'Consent/',
+        stage: 'Consent',
+        title: 'Share your record with Meridian Health',
+        body: 'You decide what each group can see. You can change any of this later in settings.',
+        cta: 'Agree and continue',
+        modules: ['Consent Collection'],
+      },
+      // alsoPrefixes: one screen, several domain elements. Each is a separate
+      // top-level element in `collects`, so a single prefix would claim only
+      // the first and the screen would render one field out of three.
+      {
+        name: 'personal',
+        kind: 'form',
+        prefix: 'MothersMaidenName',
+        alsoPrefixes: ['Gender', 'NationalInsuranceNumber'],
+        stage: 'Details',
+        title: 'Your details',
+        body: 'We match these against national records to find your patient file.',
+        cta: 'Continue',
+      },
+      {
+        name: 'contact',
+        kind: 'form',
+        prefix: 'MobilePhone/',
+        alsoPrefixes: ['LandlinePhone/'],
+        stage: 'Contact',
+        title: 'How can we reach you?',
+        body: 'We use this to confirm it is you, and to tell you when your record is ready.',
+        cta: 'Continue',
+      },
+      {
+        name: 'address',
+        kind: 'form',
+        prefix: 'CurrentAddress/',
+        stage: 'Address',
+        title: 'Your address',
+        body: 'We match this against national records to find your patient file.',
+        cta: 'Continue',
+      },
       {
         name: 'document',
         kind: 'capture',
@@ -67,16 +117,6 @@ export const meridianHealth: MarketConfig = {
         cta: 'Take selfie',
         captureType: 'selfie',
         modules: ['Liveness Verification', 'Facematch Verification'],
-      },
-      {
-        name: 'consent',
-        kind: 'consent',
-        prefix: 'Consent/',
-        stage: 'Consent',
-        title: 'Share your record with Meridian Health',
-        body: 'You decide what each group can see. You can change any of this later in settings.',
-        cta: 'Agree and continue',
-        modules: ['Consent Collection'],
       },
     ],
     // The design has three independent toggles; the Consent Collection module

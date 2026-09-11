@@ -45,6 +45,17 @@ const KNOWN: Record<string, FieldMapping> = {
   },
   locality: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'locality'], wrap: 'none' },
   postcode: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'postalCode'], wrap: 'none' },
+  // Go's element leaf is postalCode; "postcode" above is the short name a
+  // hand-built screen sends. Both are here so a form stage named after the
+  // ref resolves by leaf like every other field.
+  postalCode: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'postalCode'], wrap: 'none' },
+  // Every address component a market may mark required. An unmapped one
+  // falls through to the flat fallback and Go rejects the submit.
+  premise: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'premise'], wrap: 'none' },
+  subBuilding: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'subBuilding'], wrap: 'none' },
+  dependentThoroughfare: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'dependentThoroughfare'], wrap: 'none' },
+  dependentLocality: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'dependentLocality'], wrap: 'none' },
+  addressString: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'addressString'], wrap: 'none' },
   country: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'country'], wrap: 'none' },
 
   mobileNumber: { domainElementId: 'MobilePhone', path: ['identity', 'phones'], wrap: 'phone' },
@@ -57,8 +68,29 @@ const KNOWN: Record<string, FieldMapping> = {
   selfieImage: { domainElementId: 'Selfie', path: ['biometrics'], wrap: 'selfie' },
 };
 
+/**
+ * The mapping for one submitted field, by either name it can arrive under.
+ *
+ * A form stage's fields are named after the domain element refs Go reports,
+ * so the front end submits `CurrentAddress/postalCode`, not `postcode`. The
+ * keys below are the short names, which is all the capture and consent
+ * screens ever send — so a prefixed ref missed every entry, fell through to
+ * the flat fallback, and Go rejected the submit with "Required domain
+ * element 'CurrentAddress/building' data is missing from context" on a
+ * screen the customer had already filled in.
+ *
+ * So: try the key as sent, then its leaf. Leaf names are unique across this
+ * table, and matching `<Element>/<leaf>` on the leaf lands a ref at the same
+ * path as the short name it duplicates.
+ */
 function forKey(key: string): FieldMapping {
-  return KNOWN[key] ?? { domainElementId: key, path: [key], wrap: 'none' };
+  const known = KNOWN[key];
+  if (known) return known;
+  if (key.includes('/')) {
+    const byLeaf = KNOWN[key.slice(key.lastIndexOf('/') + 1)];
+    if (byLeaf) return byLeaf;
+  }
+  return { domainElementId: key, path: [key], wrap: 'none' };
 }
 
 /**
@@ -107,9 +139,43 @@ function place(subject: Record<string, unknown>, mapping: FieldMapping, value: u
       cursor[leaf] = [{ type: 'Selfie', selfieImage: text }];
       break;
     case 'none':
-      cursor[leaf] = value;
+      cursor[leaf] = leaf === 'country' ? countryCode(text) : value;
       break;
   }
+}
+
+/**
+ * A country as Go will accept it: /^[A-Z]{2,3}$/.
+ *
+ * The front end renders this as a plain text box — its field type vocabulary
+ * has no select — so a customer types "United Kingdom" and Go answers 400
+ * "Invalid string: must match pattern", which surfaces as a Continue button
+ * that does nothing. An already-valid code passes through upper-cased, and a
+ * name this table does not know is sent as typed so Go's own error stands
+ * rather than a guess.
+ *
+ * Deliberately short: the UK plus the countries these demo journeys name. It
+ * is a nudge for hand-typed input, not an i18n country table.
+ */
+const COUNTRY_CODES: Record<string, string> = {
+  'UNITED KINGDOM': 'GBR',
+  'GREAT BRITAIN': 'GBR',
+  ENGLAND: 'GBR',
+  SCOTLAND: 'GBR',
+  WALES: 'GBR',
+  'NORTHERN IRELAND': 'GBR',
+  UK: 'GBR',
+  IRELAND: 'IRL',
+  'UNITED STATES': 'USA',
+  'UNITED STATES OF AMERICA': 'USA',
+  USA: 'USA',
+};
+
+function countryCode(typed: string): string {
+  const trimmed = typed?.trim() ?? '';
+  const upper = trimmed.toUpperCase();
+  if (/^[A-Z]{2,3}$/.test(upper)) return upper;
+  return COUNTRY_CODES[upper] ?? trimmed;
 }
 
 /**

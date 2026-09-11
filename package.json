@@ -5,13 +5,17 @@
   "description": "Thin-proxy onboarding microservice — TypeScript/Next.js implementation, contract-identical to the Java sample.",
   "scripts": {
     "dev:northbank": "cross-env MARKET=northbank GO_MODE=mock PORT=8081 next dev -p 8081",
+    "dev:northbank:live": "cross-env MARKET=northbank GO_MODE=live PORT=8081 next dev -p 8081",
     "dev:meridian-health": "cross-env MARKET=meridian-health GO_MODE=mock PORT=8082 next dev -p 8082",
     "dev:ridgeline-play": "cross-env MARKET=ridgeline-play GO_MODE=mock PORT=8083 next dev -p 8083",
+    "dev:ridgeline-play:live": "cross-env MARKET=ridgeline-play GO_MODE=live PORT=8083 next dev -p 8083",
     "dev:meridian-health:live": "cross-env MARKET=meridian-health GO_MODE=live PORT=8082 next dev -p 8082",
     "build": "next build",
     "start:northbank": "cross-env MARKET=northbank GO_MODE=mock PORT=8081 next start -p 8081",
+    "start:northbank:live": "cross-env MARKET=northbank GO_MODE=live PORT=8081 next start -p 8081",
     "start:meridian-health": "cross-env MARKET=meridian-health GO_MODE=mock PORT=8082 next start -p 8082",
     "start:ridgeline-play": "cross-env MARKET=ridgeline-play GO_MODE=mock PORT=8083 next start -p 8083",
+    "start:ridgeline-play:live": "cross-env MARKET=ridgeline-play GO_MODE=live PORT=8083 next start -p 8083",
     "start:meridian-health:live": "cross-env MARKET=meridian-health GO_MODE=live PORT=8082 next start -p 8082",
     "test": "vitest run",
     "test:watch": "vitest"

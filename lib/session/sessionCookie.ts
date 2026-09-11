@@ -6,23 +6,33 @@ import { sessionConfig } from '../config';
  * session cookie needs to agree on.
  */
 export function setSessionCookie(response: NextResponse, request: NextRequest, token: string): void {
+  // `secure` tracks the incoming request's own scheme rather than being
+  // hardcoded true: a browser's "localhost is a secure context" exception is
+  // Chromium-specific, and a Secure cookie issued over plain HTTP is silently
+  // dropped by curl and most other HTTP clients.
+  const secure = request.nextUrl.protocol === 'https:';
+
   response.cookies.set(sessionConfig.cookieName, token, {
     httpOnly: true,
-    // `secure` tracks the incoming request's own scheme rather than being
-    // hardcoded true: a browser's "localhost is a secure context" exception
-    // is Chromium-specific, and a Secure cookie issued over plain HTTP is
-    // silently dropped by curl and most other HTTP clients.
-    secure: request.nextUrl.protocol === 'https:',
-    // `none`, not `lax`: the front end and this API are different origins by
-    // design (see each market's corsAllowedOrigins and middleware.ts's
-    // credentialed CORS handling) — SameSite=Lax withholds a cookie from a
-    // cross-site fetch/XHR entirely, only sending it on a top-level
-    // navigation, so a Lax cookie would never reach this API from a real
-    // cross-origin front end. Browsers additionally require Secure whenever
-    // SameSite=None, so cross-origin cookie delivery only works once this
-    // API is served over HTTPS — a local http://-to-http:// pairing needs an
-    // HTTPS dev proxy in front of it, not a workaround here.
-    sameSite: 'none',
+    secure,
+    // `none` over HTTPS, `lax` over HTTP — and the scheme is what decides,
+    // because browsers reject SameSite=None without Secure outright.
+    //
+    // `none` is the right answer in production: the front end and this API
+    // are different origins by design (see each market's corsAllowedOrigins
+    // and middleware.ts's credentialed CORS handling), and SameSite=Lax
+    // withholds a cookie from a cross-site fetch entirely, sending it only on
+    // a top-level navigation.
+    //
+    // But a plain-HTTP pairing cannot have `none` at all. Issuing it anyway
+    // means the browser stores no cookie, the next submit arrives without
+    // one, and every request after the first fails as an expired session —
+    // which is what a local http://localhost:3001 front end against this API
+    // on http://localhost:8082 did, while curl (which does not enforce the
+    // rule) worked fine and hid it. `lax` carries that pairing, because
+    // localhost-to-localhost is same-site by the browser's own definition;
+    // the Java backend has always used it for the same reason.
+    sameSite: secure ? 'none' : 'lax',
     path: '/v1/sessions',
     // Refreshed to the full TTL on every authenticated response, matching
     // sessionStore's own sliding idle timeout — otherwise an active user's
