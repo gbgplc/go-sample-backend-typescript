@@ -87,7 +87,12 @@ export interface Interaction {
   note?: string;
   cta?: string;
   secondaryCta?: string;
-  captureType?: 'document' | 'selfie';
+  /**
+   * 'document-back' is the second side of a two-sided document: the same
+   * rear-facing capture as 'document', distinct so the screen can say which
+   * side is wanted and the backend can route it to side2Image.
+   */
+  captureType?: 'document' | 'document-back' | 'selfie';
   accepted?: string[];
   collects?: FieldSchema[];
   options?: ChoiceOption[];
@@ -144,6 +149,16 @@ export interface RecordResponse {
   moduleRuns: ModuleRun[];
   summary: SummaryRow[];
   recordNote?: string;
+  /**
+   * The checks could not run, as opposed to running and declining.
+   *
+   * Carried explicitly because the two are indistinguishable from `decision`
+   * alone — both arrive as `fail` — and they mean opposite things to the
+   * customer: a decline is a verdict to appeal, an error is a reason to try
+   * again. The service knows which it is, so it says so rather than leaving
+   * each client to infer it and get it wrong.
+   */
+  systemError?: boolean;
 }
 
 export interface AttachmentResponse {

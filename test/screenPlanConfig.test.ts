@@ -16,11 +16,34 @@ describe('each market config validates cleanly as-is', () => {
     ).not.toThrow();
   });
 
-  it('meridian-health has a populated screen plan; the other two are empty (no published journey yet)', () => {
-    expect(meridianHealth.screenPlan.stages).toHaveLength(3);
+  it('every market has a populated screen plan', () => {
+    // Six collection pages, consent first: a patient agrees to their record
+    // being opened before anything is collected.
+    expect(meridianHealth.screenPlan.stages.map((s) => s.name)).toEqual([
+      'consent',
+      'personal',
+      'contact',
+      'address',
+      'document',
+      'biometrics',
+    ]);
     expect(meridianHealth.screenPlan.consentChecks).toHaveLength(3);
-    expect(northbank.screenPlan.stages).toHaveLength(0);
-    expect(ridgelinePlay.screenPlan.stages).toHaveLength(0);
+    // All three markets now have published journeys and populated plans.
+    expect(northbank.screenPlan.stages.map((s) => s.name)).toEqual([
+      'personal',
+      'contact',
+      'details',
+      'document',
+      'biometrics',
+    ]);
+    expect(ridgelinePlay.screenPlan.stages.map((s) => s.name)).toEqual([
+      'personal',
+      'contact',
+      'address',
+      'previous-addresses',
+      'document',
+      'biometrics',
+    ]);
   });
 });
 

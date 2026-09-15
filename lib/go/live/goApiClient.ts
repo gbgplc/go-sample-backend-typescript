@@ -39,6 +39,60 @@ const lastOutstandingByInstance: Map<string, string[]> =
   globalForGoApiClient.__lastOutstandingByInstance ?? new Map();
 globalForGoApiClient.__lastOutstandingByInstance = lastOutstandingByInstance;
 
+/**
+ * Stage names already submitted, per Go instance — the journey's progress.
+ *
+ * Go's `outstanding` is a static declaration of everything the journey
+ * collects, not a shrinking to-do list: it comes back byte-identical after a
+ * successful submit. That breaks the rule the screen plan was written
+ * against — "first stage whose elements are still outstanding wins" — because
+ * the first stage always still claims something. The customer submits the
+ * consent screen, the next fetch picks the same stage again, and the journey
+ * loops on screen one forever.
+ *
+ * Same lifetime and bound as the outstanding cache above: in-memory and
+ * single-node, which is what the session store already is.
+ */
+const globalForStages = globalThis as unknown as { __completedStagesByInstance?: Map<string, Set<string>> };
+const completedStagesByInstance: Map<string, Set<string>> =
+  globalForStages.__completedStagesByInstance ?? new Map();
+globalForStages.__completedStagesByInstance = completedStagesByInstance;
+
+function completedStages(instanceId: string): Set<string> {
+  return new Set(completedStagesByInstance.get(instanceId) ?? []);
+}
+
+function recordStage(instanceId: string, stageName: string): void {
+  const done = completedStagesByInstance.get(instanceId) ?? new Set<string>();
+  done.add(stageName);
+  completedStagesByInstance.delete(instanceId);
+  completedStagesByInstance.set(instanceId, done);
+  if (completedStagesByInstance.size > MAX_CACHED_INSTANCES) {
+    const oldest = completedStagesByInstance.keys().next().value;
+    if (oldest !== undefined) completedStagesByInstance.delete(oldest);
+  }
+}
+
+/**
+ * Last instructions seen per instance, so a capture submit can tell the back
+ * of a document from the front without an extra fetch — the same reason the
+ * outstanding cache exists. Side2Required is the signal that matters.
+ */
+const globalForInstructions = globalThis as unknown as { __lastInstructionsByInstance?: Map<string, string[]> };
+const lastInstructionsByInstance: Map<string, string[]> =
+  globalForInstructions.__lastInstructionsByInstance ?? new Map();
+globalForInstructions.__lastInstructionsByInstance = lastInstructionsByInstance;
+
+function rememberInstructions(instanceId: string, instructions: string[] | undefined): void {
+  if (!instructions) return;
+  lastInstructionsByInstance.delete(instanceId);
+  lastInstructionsByInstance.set(instanceId, instructions);
+  if (lastInstructionsByInstance.size > MAX_CACHED_INSTANCES) {
+    const oldest = lastInstructionsByInstance.keys().next().value;
+    if (oldest !== undefined) lastInstructionsByInstance.delete(oldest);
+  }
+}
+
 function rememberOutstanding(instanceId: string, outstanding: string[] | undefined): void {
   if (!outstanding) return;
   lastOutstandingByInstance.delete(instanceId);
@@ -107,7 +161,8 @@ async function fetchInteraction(instanceId: string): Promise<SubmitInteractionRe
     throw OnboardingException.upstreamUnavailable('Could not read your verification status. Try again shortly.');
   }
   rememberOutstanding(instanceId, response.outstanding);
-  const interaction = defaultInteractionMapper.toInteraction(response);
+  rememberInstructions(instanceId, response.instructions);
+  const interaction = defaultInteractionMapper.toInteraction(response, completedStages(instanceId));
   return { status: statusFrom(interaction), interaction };
 }
 
@@ -139,7 +194,25 @@ async function resolveAttachment(
   if (!outstanding) {
     outstanding = await fetchOutstanding(instanceId);
   }
-  const document = outstanding.some((o) => o.startsWith('PrimaryDocument/'));
+  // The back of the document, when Go has asked for it. Checked first: by
+  // this point side 1 is submitted and the document stage counts as
+  // completed, so the stage-based check below would read the capture as the
+  // selfie and overwrite the wrong element.
+  const instructions = lastInstructionsByInstance.get(instanceId) ?? [];
+  if (instructions.some((i) => i.toLowerCase() === 'side2required') || outstanding.includes('PrimaryDocument/side2Image')) {
+    const back = { ...data };
+    delete back['attachmentRef'];
+    back['documentBack'] = ref;
+    return back;
+  }
+
+  // Which capture this is, from the stage the customer is actually on.
+  // Reading `outstanding` alone is wrong wherever the journey does not
+  // advertise the element: a lazily collected document is never listed, so
+  // every capture reads as a selfie and the document lands in
+  // subject.biometrics where Document Classification never sees it.
+  const fromStage = defaultInteractionMapper.currentCaptureIsDocument(outstanding, completedStages(instanceId));
+  const document = fromStage ?? outstanding.some((o) => o.startsWith('PrimaryDocument/'));
 
   const rewritten = { ...data };
   delete rewritten['attachmentRef'];
@@ -175,12 +248,18 @@ export const goApiClient: GoClient = {
 
   async submitInteraction(instanceId, interactionId, data): Promise<SubmitInteractionResponse> {
     const payload = await resolveAttachment(instanceId, data);
+    // Which stage this submit answers, read before the call so a Go rejection
+    // leaves progress untouched — a failed submit must not mark its stage
+    // done, or a validation error would skip the screen the customer still
+    // has to correct.
+    const submittedStage = defaultInteractionMapper.stageFor(Object.keys(payload ?? {}), completedStages(instanceId));
     await call(() =>
       authedFetch(
         'journey/interaction/submit',
         buildSubmitRequest(instanceId, interactionId, payload, marketConfig.app.consentUrl, marketConfig.app.consentTerms)
       )
     );
+    if (submittedStage) recordStage(instanceId, submittedStage);
     // The submit response only acknowledges receipt; the next screen comes
     // from re-fetching the interaction, same as the mock's own response shape.
     return fetchInteraction(instanceId);

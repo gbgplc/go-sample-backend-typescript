@@ -36,6 +36,19 @@ export interface GoResult {
   data?: Record<string, unknown>;
 }
 
+/**
+ * One collectable domain element ref.
+ *
+ * `spec` is the field's own requirement, `parentSpec` its element group's.
+ * A ref whose parent is optional is never listed in `outstanding`, which is
+ * why the two fields answer different questions.
+ */
+export interface GoCollect {
+  ref: string;
+  spec?: string;
+  parentSpec?: string;
+}
+
 /** POST {baseUrl}journey/interaction/fetch response. */
 export interface GoInteractionFetchResponse {
   instanceId?: string;
@@ -46,6 +59,35 @@ export interface GoInteractionFetchResponse {
   outstanding?: string[];
   instructions?: string[];
   result?: GoResult;
+}
+
+/**
+ * Every domain element ref this interaction collects, required or not.
+ *
+ * `outstanding` is the narrower field: only what Go is currently blocking on.
+ * An element whose parent is optional never appears there — the Meridian
+ * journey lists 47 refs under `collects` against 8 in `outstanding`, and its
+ * consent, personal-details, contact-details and address pages are all in
+ * that difference. Selecting screens on `outstanding` silently drops them.
+ *
+ * Empty when the interaction carries no collects (the mock, or a journey
+ * predating the field), and callers fall back to `outstanding`.
+ */
+export function collectsOf(response: GoInteractionFetchResponse): GoCollect[] {
+  const raw = response.interaction?.collects;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const { ref, spec, parentSpec } = entry as Record<string, unknown>;
+    if (typeof ref !== 'string') return [];
+    return [
+      {
+        ref,
+        spec: typeof spec === 'string' ? spec : undefined,
+        parentSpec: typeof parentSpec === 'string' ? parentSpec : undefined,
+      },
+    ];
+  });
 }
 
 /** POST {baseUrl}journey/interaction/submit request body. */

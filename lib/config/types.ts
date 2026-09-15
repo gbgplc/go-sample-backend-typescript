@@ -5,6 +5,23 @@ export interface ScreenPlanStage {
   name: string;
   kind: ScreenKind;
   prefix: string;
+  /**
+   * Extra ref prefixes this screen collects, beyond `prefix`.
+   *
+   * One screen often collects several domain elements — a personal-details
+   * page asking for MothersMaidenName, Gender and NationalInsuranceNumber is
+   * three separate top-level elements in `collects`. A single prefix claims
+   * only the first, and the screen renders one field out of three.
+   */
+  alsoPrefixes?: string[];
+  /**
+   * Run this stage even when Go never lists its elements as outstanding.
+   *
+   * A journey can accept an element it does not advertise: a document
+   * collected lazily is never named in `outstanding`, yet submitting one
+   * returns success. Off by default, so a stage nothing claims stays skipped.
+   */
+  alwaysCollect?: boolean;
   stage: string;
   title: string;
   body: string;
