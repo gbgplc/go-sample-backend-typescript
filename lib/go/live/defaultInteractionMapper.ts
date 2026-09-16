@@ -7,6 +7,7 @@ import {
   ModuleState,
   RecordResponse,
   StagePlanEntry,
+  SummaryRow,
 } from '../../dto/types';
 import { marketConfig } from '../../config';
 import { ScreenPlanConfig, ScreenPlanStage } from '../../config/types';
@@ -17,6 +18,9 @@ import {
   GoInteractionFetchResponse,
   GoStateResponse,
   GoStateStep,
+  journeyInfo,
+  stepDurationMs,
+  stepEndedAt,
 } from './dto';
 
 /**
@@ -194,6 +198,21 @@ function classify(outcomeClassification: string | undefined, whenUnclassified: M
  * Authentication finishing and finding the document fraudulent), so
  * status "complete" alone is not enough to call it a Pass.
  */
+/**
+ * Outcome phrases confirmed positive against a real completed run,
+ * 2026-09-16 — deliberately a narrow allowlist, not a keyword match: "No
+ * Match" contains "Match" as a substring, and would wrongly turn green under
+ * anything looser than an exact phrase. Extend only with phrases actually
+ * observed to mean success; an ambiguous one (e.g. "Medium Risk") stays
+ * Review rather than being guessed at.
+ */
+const POSITIVE_OUTCOMES = new Set(['document classified', 'extraction successful', 'success', 'match']);
+
+/** Pass for a confirmed-positive outcome phrase, Review for anything else (including none at all). */
+function outcomeState(outcome: string | undefined): ModuleState {
+  return outcome !== undefined && POSITIVE_OUTCOMES.has(outcome.toLowerCase()) ? 'Pass' : 'Review';
+}
+
 export function mapModuleState(step: GoStateStep): ModuleState {
   const status = step.result?.status?.toLowerCase();
   if (status) {
@@ -203,8 +222,11 @@ export function mapModuleState(step: GoStateStep): ModuleState {
         return 'Fail';
       case 'pending':
         return 'Running';
+      // Live modules never carry outcomeClassification themselves — only the
+      // journey's own decision node does — so classify() always falls
+      // through to outcomeState() in practice.
       case 'complete':
-        return classify(step.outcomeClassification, 'Review');
+        return classify(step.outcomeClassification, outcomeState(step.result?.outcome));
       default:
         return 'Review';
     }
@@ -212,13 +234,97 @@ export function mapModuleState(step: GoStateStep): ModuleState {
   return classify(step.outcomeClassification, 'Running');
 }
 
-function processingInteraction(interactionId: string): Interaction {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** A Go timestamp (ISO-8601) as "26 Aug 2026 09:41:02", or undefined if missing/unparseable. */
+function formatTimestamp(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return undefined;
+  const day = date.getUTCDate();
+  const month = MONTHS[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  const hh = String(date.getUTCHours()).padStart(2, '0');
+  const mm = String(date.getUTCMinutes()).padStart(2, '0');
+  const ss = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${day} ${month} ${year} ${hh}:${mm}:${ss}`;
+}
+
+/** The gap between two Go timestamps as "6.4 seconds", or undefined if either is missing/unparseable. */
+function formatDurationSeconds(startIso: string | undefined, endIso: string | undefined): string | undefined {
+  if (!startIso || !endIso) return undefined;
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+  return `${((end - start) / 1000).toFixed(1)} seconds`;
+}
+
+/**
+ * A module's own run time as "1.6s" — shorter than `formatDurationSeconds`,
+ * to fit inline next to its pass/fail label rather than as a standalone row.
+ */
+function formatModuleMs(durationMilliSec: number | undefined): string | undefined {
+  if (durationMilliSec === undefined) return undefined;
+  return `${(durationMilliSec / 1000).toFixed(1)}s`;
+}
+
+/**
+ * The most recent module completion time across every step, or undefined if
+ * none has finished yet — the substitute for `journey.endedAt`, which
+ * `journey/state/fetch` never populates (verified against two real completed
+ * runs, 2026-09-16). ISO-8601 instants in the same (UTC, 'Z'-suffixed) format
+ * compare correctly as plain strings.
+ */
+function latestStepEndedAt(response: GoStateResponse): string | undefined {
+  let latest: string | undefined;
+  for (const step of allSteps(response)) {
+    const ended = stepEndedAt(step);
+    if (ended !== undefined && (latest === undefined || ended > latest)) {
+      latest = ended;
+    }
+  }
+  return latest;
+}
+
+/**
+ * The document type Document Classification reported, e.g. "Utopia (UTO) GBG
+ * Sample Identification Card (2024)" — or undefined if no step has
+ * classified one yet.
+ *
+ * Verified against a real completed run, 2026-09-16: the classified document
+ * is not on the top-level `GoResult` at all (its own `data` field is
+ * undefined throughout a real journey). It is Document Classification's own
+ * step result, echoed back at `result.subject.documents[0].classification.name`
+ * — a per-module contribution to the journey's subject, not a journey-level
+ * field. A later step's result may or may not repeat it, so every step is
+ * checked and the first match wins.
+ */
+function documentTypeLabel(response: GoStateResponse): string | undefined {
+  for (const step of allSteps(response)) {
+    const subject = step.result?.subject;
+    const documents = subject?.['documents'];
+    if (!Array.isArray(documents) || documents.length === 0) continue;
+    const document = documents[0];
+    if (!document || typeof document !== 'object') continue;
+    const classification = (document as Record<string, unknown>)['classification'];
+    if (!classification || typeof classification !== 'object') continue;
+    const name = (classification as Record<string, unknown>)['name'];
+    if (typeof name === 'string' && name.trim() !== '') return name;
+  }
+  return undefined;
+}
+
+function processingInteraction(
+  interactionId: string,
+  title = 'Running Identity Verification',
+  body = 'This usually takes a few seconds.'
+): Interaction {
   return {
     interactionId,
     kind: 'processing',
     stage: 'Processing',
-    title: 'Running your checks',
-    body: 'This usually takes a few seconds.',
+    title,
+    body,
   };
 }
 
@@ -433,7 +539,7 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
       // Classification has not answered yet. Waiting is the only correct move
       // — guessing wrong costs the customer their selfie.
       if (side2Undecided(response.instructions)) {
-        return processingInteraction(interactionId);
+        return processingInteraction(interactionId, 'Verifying document type', 'This usually takes a few seconds.');
       }
     }
 
@@ -459,10 +565,19 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // mapDecision would default that to REFER, telling the customer a review
     // is under way when nothing is running at all.
     const decision: Decision = isFailed(response.status) ? 'fail' : mapDecision(response.result);
-    const moduleRuns: ModuleRun[] = allSteps(response).map((step) => ({
-      label: step.name ?? step.nodeId ?? '',
-      state: mapModuleState(step),
-    }));
+    // The journey graph's own terminal decision node has no name and no
+    // result — every real module has both. Without this filter it falls back
+    // to its raw nodeId (e.g. "mtrehx2922ie24j37zu") and shows up as a fake
+    // module in the list, duplicating the decision the screen already states
+    // up top. Verified against a real completed run, 2026-09-16.
+    const moduleRuns: ModuleRun[] = allSteps(response)
+      .filter((step) => step.name !== undefined)
+      .map((step) => ({
+        label: step.name!,
+        state: mapModuleState(step),
+        ms: formatModuleMs(stepDurationMs(step)),
+        outcome: step.result?.outcome,
+      }));
 
     // A module that could not run is not a customer who failed a check.
     // Telling someone they were "Declined" when the platform errored is both
@@ -509,14 +624,47 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
           ? 'We were not able to verify your identity from what you provided.'
           : 'Someone is reviewing your details. We will be in touch.';
 
+    // Journey name, reference, timestamps, total time and the document type —
+    // "route taken" itself is just the order of moduleRuns above, so it needs
+    // no separate row here. Each piece is added only when Go actually
+    // supplied it: a market whose journey predates journeyInfo(), or one
+    // still running when this was fetched, has some or all of it missing,
+    // and a half-true row (e.g. "Total time: NaN seconds") is worse than no
+    // row.
+    //
+    // journey.endedAt is never populated by journey/state/fetch — verified
+    // against two real completed runs, 2026-09-16, both still undefined after
+    // the decision was reached. The latest step's own endedAt is the closest
+    // real substitute: the decision fires immediately once the last module
+    // finishes.
+    const journey = journeyInfo(response);
+    const startedAt = journey?.startedAt;
+    const endedAt = journey?.endedAt ?? latestStepEndedAt(response);
+    const totalTime = formatDurationSeconds(startedAt, endedAt);
+
+    const summary: SummaryRow[] = [];
+    if (journey?.name) {
+      summary.push({ k: 'Journey', v: journey.version ? `${journey.name} · v${journey.version}` : journey.name });
+    }
+    if (response.instanceId) {
+      summary.push({ k: 'Reference', v: response.instanceId });
+    }
+    const startedLabel = formatTimestamp(startedAt);
+    if (startedLabel) summary.push({ k: 'Started', v: startedLabel });
+    const endedLabel = formatTimestamp(endedAt);
+    if (endedLabel) summary.push({ k: 'Decision reached', v: endedLabel });
+    if (totalTime) summary.push({ k: 'Total time', v: totalTime });
+    const documentLabel = documentTypeLabel(response);
+    if (documentLabel) summary.push({ k: 'Document', v: documentLabel });
+
     return {
       decision,
       title,
-      timing: '',
+      timing: totalTime ?? '',
       body,
       cta: systemError ? 'Try again' : 'Done',
       moduleRuns,
-      summary: [],
+      summary,
       systemError,
     };
   }

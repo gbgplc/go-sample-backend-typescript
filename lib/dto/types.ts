@@ -41,6 +41,16 @@ export interface ModuleRun {
   label: string;
   state: ModuleState;
   ms?: string;
+  /**
+   * Go's own descriptive result for this module — e.g. "Document
+   * Classified", "Extraction Successful", "No Match" — the same text shown
+   * in the Go platform's own investigation UI. Worth showing because `state`
+   * alone often cannot: a module with no positive/negative verdict of its
+   * own (Document Classification, Extraction) always maps to `Review`
+   * regardless of how it actually went, so the coloured badge carries the
+   * state and this carries the detail.
+   */
+  outcome?: string;
 }
 
 export interface SummaryRow {

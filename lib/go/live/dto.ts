@@ -98,18 +98,41 @@ export interface GoInteractionSubmitRequest {
   context: { subject: Record<string, unknown> };
 }
 
+/** The journey's own name/version/timing, wherever a state-fetch response carries it. */
+export interface GoJourneyInfo {
+  id?: string;
+  name?: string;
+  version?: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
 /**
  * POST {baseUrl}journey/state/fetch response. Per-module results are nested
  * at context.process.steps, not at the root: `steps` stays for any response
  * that does put them there, and `allSteps()` reads whichever is populated.
+ * Journey timing has the same split — see `journeyInfo()`.
  */
 export interface GoStateResponse {
   instanceId?: string;
   status?: string;
-  journey?: { id?: string; name?: string; version?: string; startedAt?: string; endedAt?: string };
+  journey?: GoJourneyInfo;
   steps?: GoStateStep[];
   result?: GoResult;
-  context?: { process?: { steps?: GoStateStep[] } };
+  context?: { process?: { steps?: GoStateStep[]; journey?: GoJourneyInfo } };
+}
+
+/**
+ * `durationMilliSec`, `startedAt` and `endedAt` live at `process.step.*` —
+ * verified against a real completed run, 2026-09-16 — not as siblings of
+ * `result` as an earlier version of this type assumed (that guess always
+ * read back undefined).
+ */
+export interface GoStateStepDetail {
+  startedAt?: string;
+  endedAt?: string;
+  durationMilliSec?: number;
+  moduleName?: string;
 }
 
 export interface GoStateStep {
@@ -118,13 +141,32 @@ export interface GoStateStep {
   outcome?: string;
   outcomeClassification?: string;
   result?: GoStateStepResult;
+  process?: { step?: GoStateStepDetail };
 }
 
-/** A step's own result. Present on the nested `result` object, not the step root. */
+/** How long this step's module took to run, in milliseconds, or undefined if not yet finished. */
+export function stepDurationMs(step: GoStateStep): number | undefined {
+  return step.process?.step?.durationMilliSec;
+}
+
+/** When this step's module finished (ISO-8601), or undefined if not yet finished. */
+export function stepEndedAt(step: GoStateStep): string | undefined {
+  return step.process?.step?.endedAt;
+}
+
+/**
+ * A step's own result. Present on the nested `result` object, not the step
+ * root. `subject` is that module's own contribution to the journey's subject
+ * data — e.g. Document Classification's own result carries
+ * `subject.documents[0].classification`, which is where the classified
+ * document type actually surfaces (verified against a real completed run,
+ * 2026-09-16) — the top-level `GoResult` never carries it.
+ */
 export interface GoStateStepResult {
   status?: string;
   outcome?: string;
   error?: GoStateStepError;
+  subject?: Record<string, unknown>;
 }
 
 /**
@@ -140,6 +182,11 @@ export interface GoStateStepError {
 export function allSteps(response: GoStateResponse): GoStateStep[] {
   if (response.steps && response.steps.length > 0) return response.steps;
   return response.context?.process?.steps ?? [];
+}
+
+/** The journey's own name/version/timing, from wherever this response carries it — see `GoJourneyInfo`. */
+export function journeyInfo(response: GoStateResponse): GoJourneyInfo | undefined {
+  return response.journey ?? response.context?.process?.journey;
 }
 
 export function firstStepErrorAction(step: GoStateStep): string | undefined {
