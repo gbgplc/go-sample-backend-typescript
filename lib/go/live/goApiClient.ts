@@ -270,9 +270,33 @@ export const goApiClient: GoClient = {
     // A Failed journey is terminal. Reporting IN_PROGRESS would leave the
     // front end's processing screen polling an instance that will never
     // advance, so it reports Completed — the decision it carries is fail.
-    const status: JourneyStatus =
-      response.status?.toLowerCase() === 'completed' || isFailed(response.status) ? 'Completed' : 'InProgress';
+    //
     const asRecord = defaultInteractionMapper.toRecord(response);
+
+    // A journey that has decided without its status reaching Completed is
+    // terminal too. Northbank settles on `refer` and Go leaves the instance
+    // open for the out-of-band manual review — `outstanding` names
+    // ManualReviewDecision, and the status stays InProgress indefinitely
+    // (verified 2026-09-17, instance IP1C5YOS5F0w72elvqa4WM). Polling on
+    // status alone spins until the client's cap and then reports a failure,
+    // with the decision sitting in the very response being ignored.
+    //
+    // `asRecord.decision` cannot answer this alone: mapDecision defaults a
+    // missing result to 'refer', so it is set from the first poll onwards. The
+    // decision is real only once Go sent a result carrying a classification
+    // and every module that ran has stopped running. Mirrors the Java
+    // backend's fetchState.
+    const carriesRealResult = response.result?.outcomeClassification !== undefined;
+    const everyModuleSettled =
+      asRecord.moduleRuns !== undefined &&
+      asRecord.moduleRuns.length > 0 &&
+      !asRecord.moduleRuns.some((run) => run.state === 'Running');
+    const decided = carriesRealResult && everyModuleSettled;
+
+    const status: JourneyStatus =
+      response.status?.toLowerCase() === 'completed' || isFailed(response.status) || decided
+        ? 'Completed'
+        : 'InProgress';
     return { status, decision: asRecord.decision, moduleRuns: asRecord.moduleRuns };
   },
 

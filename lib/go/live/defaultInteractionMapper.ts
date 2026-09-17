@@ -107,6 +107,17 @@ function side2Required(outstanding: string[] | undefined, instructions: string[]
 }
 
 /**
+ * Whether the journey is parked awaiting a human reviewer.
+ *
+ * Go signals this by naming `ManualReviewDecision` in `outstanding` while the
+ * journey status stays `InProgress`. It is not a collectable element — no
+ * screen can satisfy it, and the customer is not being asked for anything.
+ */
+function awaitingManualReview(outstanding: string[] | undefined): boolean {
+  return outstanding?.some((o) => o.toLowerCase() === 'manualreviewdecision') ?? false;
+}
+
+/**
  * Whether Go has yet to say whether it wants the back of the document.
  *
  * LazySide2CollectionRequired is the pre-decision state: present from the
@@ -474,6 +485,31 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
         body: response.result?.outcome,
         cta: 'Done',
         decision,
+        summary: [],
+      };
+    }
+
+    // Referred to a human. Go keeps the journey `InProgress` and names
+    // `ManualReviewDecision` in `outstanding`: every module has run, the
+    // decision node returned "Manual review", and Go now waits for a reviewer
+    // to act — an out-of-band event that may be minutes or hours away, and
+    // that no amount of polling brings closer.
+    //
+    // Without this the spinner runs to the client's polling cap and then tells
+    // the customer "nothing has been decided about you", which is untrue: a
+    // decision was reached, and it was to refer. Verified on the live tenant
+    // (2026-09-17, instance IP1C5YOS5F0w72elvqa4WM) — 11 modules complete,
+    // result.outcome "Decision: Manual review", status stable at InProgress
+    // well past the cap.
+    if (awaitingManualReview(response.outstanding)) {
+      return {
+        interactionId,
+        kind: 'result',
+        stage: 'Decision',
+        title: 'With our team',
+        body: 'Someone is reviewing your details. We will be in touch.',
+        cta: 'Done',
+        decision: 'refer',
         summary: [],
       };
     }
