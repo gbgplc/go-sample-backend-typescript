@@ -79,10 +79,16 @@ export const northbank: MarketConfig = {
         cta: 'Continue',
         modules: ['Data Verification'],
       },
+      // alwaysCollect: PrimaryDocument's parent is optional in this journey, so
+      // its refs are in `collects` but never in `outstanding`, and the fetch
+      // carries instruction "LazySide2CollectionRequired". The stage is
+      // selected on `collects`, so this is belt-and-braces for a journey that
+      // stops listing them. Matches application-northbank.yml's always-collect.
       {
         name: 'document',
         kind: 'capture',
         prefix: 'PrimaryDocument/',
+        alwaysCollect: true,
         stage: 'Document',
         title: 'Scan your photo ID',
         body: 'Hold the document flat and fill the frame. Where your document has a chip, we read it for a stronger result.',

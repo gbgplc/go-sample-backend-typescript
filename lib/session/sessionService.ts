@@ -37,6 +37,48 @@ function authorize(sessionId: string, cookieToken: string | null | undefined): S
   return session;
 }
 
+const isBlank = (value: unknown): boolean =>
+  value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
+/**
+ * Rejects a submission that omits a field the current screen marks required.
+ *
+ * Go accepts such a submission: the journey advances, the domain element is
+ * never populated, and the failure surfaces several screens later as "Required
+ * domain element 'CurrentAddress' data is missing from context" — naming an
+ * element the caller has already moved past, on a step they cannot return to.
+ * A 422 here names the fields instead, while the caller is still on the screen
+ * that collects them.
+ *
+ * The browser clients check this too, so in practice this catches the other
+ * kind of caller: someone writing their own client against this API, who would
+ * otherwise meet that 400 with nothing to act on.
+ *
+ * `required` is optional — the mock's fixtures leave it unset, and a live
+ * journey's `collects` sets it explicitly. Only an explicit true blocks, so an
+ * unknown requirement is never invented. Whitespace alone is not an answer.
+ */
+async function requireCollectedFields(
+  goInstanceId: string,
+  data: Record<string, unknown> | undefined
+): Promise<void> {
+  const goClient = await getGoClient();
+  const current = (await goClient.fetchInteraction(goInstanceId)).interaction;
+  if (!current?.collects) return;
+
+  const submitted = data ?? {};
+  const missing: Record<string, string> = {};
+  for (const field of current.collects) {
+    if (field.required === true && isBlank(submitted[field.name])) {
+      missing[field.name] = 'This is required.';
+    }
+  }
+
+  if (Object.keys(missing).length > 0) {
+    throw OnboardingException.validationFailed('One or more required fields are missing.', missing);
+  }
+}
+
 export const sessionService = {
   async startSession(
     prefill: Record<string, unknown> | undefined,
@@ -89,6 +131,7 @@ export const sessionService = {
       }
 
       const goClient = await getGoClient();
+      await requireCollectedFields(session.goInstanceId, data);
       const response = await goClient.submitInteraction(session.goInstanceId, interactionId, data);
       session.recordAdvance(interactionId, data, response);
       return response;
