@@ -195,6 +195,34 @@ function consentRecord(data: Record<string, unknown>, consentUrl: string, consen
   };
 }
 
+/**
+ * Go path → submitted field name, for the same `data` `buildSubmitRequest`
+ * would send, so a 400/422 whose problems name paths
+ * (`context.subject.identity.phones.0.number: ...`) can be reported against
+ * the field the customer typed into. Every array-wrapped placement above
+ * writes index 0, so the paths here do too.
+ */
+export function fieldsByGoPath(data: Record<string, unknown> | undefined): Record<string, string> {
+  const byPath: Record<string, string> = {};
+  for (const key of Object.keys(data ?? {})) {
+    if (CONSENT_KEYS.includes(key)) continue;
+    const mapping = forKey(key);
+    const base = `context.subject.${mapping.path.join('.')}`;
+    const path =
+      mapping.wrap === 'phone'
+        ? `${base}.0.number`
+        : mapping.wrap === 'documentSide1'
+          ? `${base}.0.side1Image`
+          : mapping.wrap === 'documentSide2'
+            ? `${base}.0.side2Image`
+            : mapping.wrap === 'selfie'
+              ? `${base}.0.selfieImage`
+              : base;
+    byPath[path] = key;
+  }
+  return byPath;
+}
+
 export function buildSubmitRequest(
   instanceId: string,
   interactionId: string,

@@ -2,7 +2,7 @@ import { Interaction, JourneyStatus, RecordResponse, StateResponse, SubmitIntera
 import { marketConfig, resolveGoBaseUrl } from '../../config';
 import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
-import { buildSubmitRequest } from './buildSubmitRequest';
+import { buildSubmitRequest, fieldsByGoPath } from './buildSubmitRequest';
 import { defaultInteractionMapper, isFailed } from './defaultInteractionMapper';
 import {
   GoErrorEnvelope,
@@ -12,7 +12,7 @@ import {
   GoStartResponse,
   GoStateResponse,
 } from './dto';
-import { getAccessToken } from './goTokenService';
+import { getAccessToken, invalidate } from './goTokenService';
 
 /**
  * Real GBG Go v2 integration. Every path here corresponds to a documented
@@ -103,43 +103,99 @@ function rememberOutstanding(instanceId: string, outstanding: string[] | undefin
   }
 }
 
-async function authedFetch(path: string, body: unknown): Promise<Response> {
-  const token = await getAccessToken();
+/** Connect plus read, per call. Without it a stalled Go call holds the session lock indefinitely. */
+const TIMEOUT_MS = 15_000;
+
+function post(path: string, body: unknown, token: string): Promise<Response> {
   return fetch(`${resolveGoBaseUrl()}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 }
 
-async function call<T>(request: () => Promise<Response>): Promise<T | undefined> {
+/**
+ * POSTs with the current access token, retrying once with a freshly minted
+ * one if Go answers 401/403 — a token Go stopped accepting before its expiry
+ * would otherwise stay cached and fail every call until it lapsed. A second
+ * rejection is returned for `call` to classify.
+ */
+async function authedFetch(path: string, body: unknown): Promise<Response> {
+  const token = await getAccessToken();
+  const response = await post(path, body, token);
+  if (response.status !== 401 && response.status !== 403) return response;
+  console.warn(`GBG Go rejected the access token (${response.status}); minting a new one and retrying once`);
+  invalidate(token);
+  return post(path, body, await getAccessToken());
+}
+
+/** Every `errors[].problem` in a Go error body, joined with "; " — empty if it isn't that shape. */
+export function goProblems(body: string): string {
+  try {
+    const envelope = JSON.parse(body) as GoErrorEnvelope;
+    return envelope.errors?.map((e) => e.problem).filter(Boolean).join('; ') ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Submitted field → Go's message, for every `path: message` segment in
+ * `problems` whose path this submit sent (live format:
+ * `context.subject.identity.phones.0.number: Invalid phone number`).
+ */
+export function rejectedFields(problems: string, fieldsByGoPath: Record<string, string>): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const segment of problems.split(/;\s*/)) {
+    const colon = segment.indexOf(': ');
+    if (colon <= 0) continue;
+    const field = fieldsByGoPath[segment.slice(0, colon).trim()];
+    if (field && !(field in fields)) fields[field] = segment.slice(colon + 2).trim();
+  }
+  return fields;
+}
+
+/**
+ * @param fieldsByGoPath for a submit, where each submitted field landed in
+ *   the request (see `fieldsByGoPath` in buildSubmitRequest), so a 400/422
+ *   can name the fields Go rejected.
+ */
+async function call<T>(
+  request: () => Promise<Response>,
+  fieldsByGoPath: Record<string, string> = {}
+): Promise<T | undefined> {
   let response: Response;
+  let text: string;
   try {
     response = await request();
+    text = await response.text();
   } catch (e) {
-    console.error('Unexpected error calling GBG Go', e);
+    console.error('Could not reach GBG Go', e);
     throw OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
   }
 
   if (response.ok) {
-    const text = await response.text();
-    return (text ? (JSON.parse(text) as T) : undefined);
+    try {
+      return text ? (JSON.parse(text) as T) : undefined;
+    } catch {
+      console.error(`GBG Go returned a body that is not JSON (${response.status})`);
+      throw OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
+    }
   }
 
-  let detail = '';
-  try {
-    const envelope = (await response.json()) as GoErrorEnvelope;
-    detail = envelope.errors?.map((e) => e.problem).filter(Boolean).join('; ') ?? '';
-  } catch {
-    detail = await response.text().catch(() => '');
-  }
-  console.warn(`GBG Go call failed: ${response.status} ${detail}`);
+  const problems = goProblems(text);
+  console.warn(`GBG Go call failed: ${response.status} ${problems || text}`);
 
   if (response.status === 404 || response.status === 410) {
     throw OnboardingException.sessionExpired('Your session has ended. Start again to continue.');
   }
   if (response.status === 400 || response.status === 422) {
-    throw OnboardingException.validationFailed('Some of the details you entered could not be verified.');
+    const fields = rejectedFields(problems, fieldsByGoPath);
+    throw OnboardingException.validationFailed(
+      'Some of the details you entered could not be verified.',
+      Object.keys(fields).length > 0 ? fields : undefined
+    );
   }
   if (response.status === 429) {
     throw OnboardingException.rateLimited('Too many attempts. Wait a moment and try again.');
@@ -253,11 +309,13 @@ export const goApiClient: GoClient = {
     // done, or a validation error would skip the screen the customer still
     // has to correct.
     const submittedStage = defaultInteractionMapper.stageFor(Object.keys(payload ?? {}), completedStages(instanceId));
-    await call(() =>
-      authedFetch(
-        'journey/interaction/submit',
-        buildSubmitRequest(instanceId, interactionId, payload, marketConfig.app.consentUrl, marketConfig.app.consentTerms)
-      )
+    await call(
+      () =>
+        authedFetch(
+          'journey/interaction/submit',
+          buildSubmitRequest(instanceId, interactionId, payload, marketConfig.app.consentUrl, marketConfig.app.consentTerms)
+        ),
+      fieldsByGoPath(payload)
     );
     if (submittedStage) recordStage(instanceId, submittedStage);
     // The submit response only acknowledges receipt; the next screen comes
