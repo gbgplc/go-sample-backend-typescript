@@ -16,7 +16,7 @@ export const meridianHealth: MarketConfig = {
     // Pinned to an exact version rather than @latest: @latest costs a
     // Journey-builder lookup on every start and doesn't pick up a publish
     // predictably.
-    resourceId: 'b3d149562ec927dedcd76f3a6b7b0f82bbf7de818aebad3b3f7baa4c14940b6b@5ph3fkm5',
+    resourceId: 'd15e58f7988a2cc685e5f581a91e970ca55270b9fe539a8259cb219dd7c1cc7c@3abdwwud',
     corsAllowedOrigins: ['http://localhost:3001'],
     consentUrl: 'https://meridianhealth.example/consent/record-access-v1',
     consentTerms: 'I agree that Meridian Health may access and share my patient record with clinicians treating me.',

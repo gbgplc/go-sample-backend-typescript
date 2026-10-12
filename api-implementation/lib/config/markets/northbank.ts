@@ -13,7 +13,7 @@ export const northbank: MarketConfig = {
     accentSoft: '#F5F5FC',
     helpLine: 'Call 0800 000 000, or carry on in a branch with the same reference.',
     journeyName: 'UK retail account opening',
-    resourceId: 'f3d875bc2ebff66f557fb177646f4c80e453d8d064b92a53fd1079edded1ea91@5q2gadns',
+    resourceId: '71da427957b893eb008c13678b72dcf05cfe50aff0b6479f53bc0a27ff23850c@r91oi63g',
     // 3000 is the app's pinned port; 3010 is a fallback for when something
     // else already holds 3000.
     corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:3010'],
