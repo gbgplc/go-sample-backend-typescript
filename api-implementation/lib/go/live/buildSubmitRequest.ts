@@ -19,7 +19,19 @@ import { GoInteractionSubmitRequest } from './dto';
 
 const CONSENT_KEYS = ['shareWithClinicians', 'sharePrescriptions', 'useForResearch'];
 
-type Wrap = 'none' | 'phone' | 'documentSide1' | 'documentSide2' | 'selfie';
+type Wrap =
+  | 'none'
+  | 'phone'
+  | 'phoneMobile'
+  | 'phoneLandline'
+  | 'emailPersonal'
+  | 'emailWork'
+  | 'idNumber'
+  | 'ssn'
+  | 'previousAddress'
+  | 'documentSide1'
+  | 'documentSide2'
+  | 'selfie';
 
 interface FieldMapping {
   domainElementId: string;
@@ -59,6 +71,20 @@ const KNOWN: Record<string, FieldMapping> = {
   country: { domainElementId: 'CurrentAddress', path: ['identity', 'currentAddress', 'country'], wrap: 'none' },
 
   mobileNumber: { domainElementId: 'MobilePhone', path: ['identity', 'phones'], wrap: 'phone' },
+
+  // Contact and personal details, by the domain element refs a form stage
+  // submits. Phones, emails and id numbers are typed arrays, so each value
+  // is appended as its own entry rather than replacing the last. Ported from
+  // go-sample-backend-java's api-implementation, which proved them live.
+  'MobilePhone/number': { domainElementId: 'MobilePhone', path: ['identity', 'phones'], wrap: 'phoneMobile' },
+  'LandlinePhone/number': { domainElementId: 'LandlinePhone', path: ['identity', 'phones'], wrap: 'phoneLandline' },
+  'PersonalEmail/email': { domainElementId: 'PersonalEmail', path: ['identity', 'emails'], wrap: 'emailPersonal' },
+  'WorkEmail/email': { domainElementId: 'WorkEmail', path: ['identity', 'emails'], wrap: 'emailWork' },
+  MothersMaidenName: { domainElementId: 'MothersMaidenName', path: ['identity', 'mothersMaidenName'], wrap: 'none' },
+  Gender: { domainElementId: 'Gender', path: ['identity', 'gender'], wrap: 'none' },
+  NationalInsuranceNumber: { domainElementId: 'NationalInsuranceNumber', path: ['identity', 'idNumbers'], wrap: 'idNumber' },
+  SSN: { domainElementId: 'SSN', path: ['identity', 'idNumbers'], wrap: 'ssn' },
+  PreviousAddresses: { domainElementId: 'PreviousAddresses', path: ['identity', 'previousAddresses'], wrap: 'previousAddress' },
 
   // Document and biometric capture. The front end sends an attachment
   // reference or a data URL; either way it lands as base64 image data
@@ -112,7 +138,20 @@ function mergeDocument(cursor: Record<string, unknown>, leaf: string, side: stri
   document[side] = image;
 }
 
-function place(subject: Record<string, unknown>, mapping: FieldMapping, value: unknown): void {
+/** Adds one entry to a typed array under `leaf`, creating it if absent; returns its index. */
+function append(cursor: Record<string, unknown>, leaf: string, entry: Record<string, string>): number {
+  const existing = cursor[leaf];
+  const entries = Array.isArray(existing) ? existing : [];
+  if (!Array.isArray(existing)) cursor[leaf] = entries;
+  entries.push(entry);
+  return entries.length - 1;
+}
+
+/**
+ * Places `value` under `subject` and returns the path Go names it by in a
+ * validation error, e.g. `context.subject.identity.emails.0.email`.
+ */
+function place(subject: Record<string, unknown>, mapping: FieldMapping, value: unknown): string {
   let cursor = subject;
   for (let i = 0; i < mapping.path.length - 1; i++) {
     const key = mapping.path[i]!;
@@ -122,25 +161,45 @@ function place(subject: Record<string, unknown>, mapping: FieldMapping, value: u
     cursor = cursor[key] as Record<string, unknown>;
   }
   const leaf = mapping.path[mapping.path.length - 1]!;
+  const at = `context.subject.${mapping.path.join('.')}`;
   const text = String(value);
   switch (mapping.wrap) {
     case 'phone':
       cursor[leaf] = [{ type: 'mobile', number: text }];
-      break;
+      return `${at}.0.number`;
+    // Appended, not replaced: a screen collecting a mobile and a landline (or
+    // a personal and a work email) sends them as separate fields, and the
+    // second would otherwise overwrite the first.
+    case 'phoneMobile':
+      return `${at}.${append(cursor, leaf, { type: 'mobile', number: text })}.number`;
+    case 'phoneLandline':
+      return `${at}.${append(cursor, leaf, { type: 'landline', number: text })}.number`;
+    case 'emailPersonal':
+      return `${at}.${append(cursor, leaf, { type: 'personal', email: text })}.email`;
+    case 'emailWork':
+      return `${at}.${append(cursor, leaf, { type: 'work', email: text })}.email`;
+    // An NI number is not a bare identity field: idNumbers[] carries a type
+    // naming the identifier alongside the number itself.
+    case 'idNumber':
+      return `${at}.${append(cursor, leaf, { type: 'NationalInsuranceNumber', idNumber: text })}.idNumber`;
+    case 'ssn':
+      return `${at}.${append(cursor, leaf, { type: 'SSN', idNumber: text })}.idNumber`;
+    case 'previousAddress':
+      return `${at}.${append(cursor, leaf, { addressString: text })}.addressString`;
     case 'documentSide1':
       mergeDocument(cursor, leaf, 'side1Image', text);
-      break;
+      return `${at}.0.side1Image`;
     case 'documentSide2':
       mergeDocument(cursor, leaf, 'side2Image', text);
-      break;
+      return `${at}.0.side2Image`;
     // `type` is required alongside the image: without it Go accepts the
     // submission but leaves Selfie/selfieImage outstanding — a silent no-op.
     case 'selfie':
       cursor[leaf] = [{ type: 'Selfie', selfieImage: text }];
-      break;
+      return `${at}.0.selfieImage`;
     case 'none':
       cursor[leaf] = leaf === 'country' ? countryCode(text) : value;
-      break;
+      return at;
   }
 }
 
@@ -198,27 +257,16 @@ function consentRecord(data: Record<string, unknown>, consentUrl: string, consen
 /**
  * Go path → submitted field name, for the same `data` `buildSubmitRequest`
  * would send, so a 400/422 whose problems name paths
- * (`context.subject.identity.phones.0.number: ...`) can be reported against
- * the field the customer typed into. Every array-wrapped placement above
- * writes index 0, so the paths here do too.
+ * (`context.subject.identity.emails.0.email: ...`) can be reported against
+ * the field the customer typed into. Array indices depend on the order
+ * fields were placed, so this runs the same placement on a scratch subject.
  */
 export function fieldsByGoPath(data: Record<string, unknown> | undefined): Record<string, string> {
   const byPath: Record<string, string> = {};
-  for (const key of Object.keys(data ?? {})) {
-    if (CONSENT_KEYS.includes(key)) continue;
-    const mapping = forKey(key);
-    const base = `context.subject.${mapping.path.join('.')}`;
-    const path =
-      mapping.wrap === 'phone'
-        ? `${base}.0.number`
-        : mapping.wrap === 'documentSide1'
-          ? `${base}.0.side1Image`
-          : mapping.wrap === 'documentSide2'
-            ? `${base}.0.side2Image`
-            : mapping.wrap === 'selfie'
-              ? `${base}.0.selfieImage`
-              : base;
-    byPath[path] = key;
+  const scratch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data ?? {})) {
+    if (CONSENT_KEYS.includes(key) || value === null || value === undefined) continue;
+    byPath[place(scratch, forKey(key), value)] = key;
   }
   return byPath;
 }
@@ -253,7 +301,9 @@ export function buildSubmitRequest(
   }
 
   for (const [key, value] of Object.entries(data)) {
-    if (CONSENT_KEYS.includes(key)) continue;
+    // A null would otherwise go out as the string "null" (e.g. email "null",
+    // which Go rejects).
+    if (CONSENT_KEYS.includes(key) || value === null || value === undefined) continue;
     const mapping = forKey(key);
     addParticipant(mapping.domainElementId);
     place(subject, mapping, value);
