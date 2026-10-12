@@ -182,11 +182,11 @@ npm test
 - **Session storage** is in-memory and single-node (a `Map`, stashed on
   `globalThis` so `next dev`'s hot-reload doesn't wipe it) — swap for Redis
   or similar before running more than one instance.
-- **The submit field table is narrower than the Java one.** It has no entry
-  for `MobilePhone/number`, `PersonalEmail/email`, `Gender`,
-  `MothersMaidenName` or `NationalInsuranceNumber`; those fall back to a flat
-  `subject.<key>` placement, which Go does not read. `sdk-implementation`
-  uses the wider table go-sample-backend-java proved live.
+- **The submit field table** (`lib/go/live/buildSubmitRequest.ts`) is a
+  sample mapping, the same one go-sample-backend-java uses. A field it does
+  not know falls back to a flat `subject.<key>` placement, which a real
+  journey will not read; a real deployment replaces the table with its
+  journey's own schema.
 - **The default consent record URL and terms text** (`consentUrl` and
   `consentTerms` in each market's own config file under
   `lib/config/markets/`) are placeholders — override them for real before any

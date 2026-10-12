@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OnboardingException } from '@/lib/errors/onboardingException';
-import { fieldsByGoPath } from '@/lib/go/live/buildSubmitRequest';
+import { buildSubmitRequest, fieldsByGoPath } from '@/lib/go/live/buildSubmitRequest';
 
 /**
  * The live client's error handling against a fake Go (stubbed global fetch):
@@ -104,11 +104,11 @@ describe('goApiClient', () => {
     await goClient.fetchInteraction('inst-1');
 
     const error = await goClient
-      .submitInteraction('inst-1', 'int-1', { mobileNumber: '123' })
+      .submitInteraction('inst-1', 'int-1', { 'MobilePhone/number': '123' })
       .catch((e: unknown) => e);
 
     expect((error as OnboardingException).code).toBe('VALIDATION_FAILED');
-    expect((error as OnboardingException).fields).toEqual({ mobileNumber: 'Invalid phone number' });
+    expect((error as OnboardingException).fields).toEqual({ 'MobilePhone/number': 'Invalid phone number' });
   });
 
   it('reports a malformed success body as upstream unavailable', async () => {
@@ -117,6 +117,62 @@ describe('goApiClient', () => {
     const error = await (await client()).fetchInteraction('inst-1').catch((e: unknown) => e);
 
     expect((error as OnboardingException).code).toBe('UPSTREAM_UNAVAILABLE');
+  });
+});
+
+describe('buildSubmitRequest — contact and personal details', () => {
+  it('places each domain element ref at its schema path, appending to typed arrays', () => {
+    const request = buildSubmitRequest(
+      'inst-1',
+      'int-1',
+      {
+        'MobilePhone/number': '07700900000',
+        'LandlinePhone/number': '02079460000',
+        'PersonalEmail/email': 'ada@example.com',
+        'WorkEmail/email': 'ada@work.example.com',
+        NationalInsuranceNumber: 'QQ123456C',
+        Gender: 'F',
+        MothersMaidenName: 'Byron',
+        PreviousAddresses: '1 Old Road',
+        firstName: null,
+      },
+      'https://example.com/terms',
+      'I agree.'
+    );
+
+    expect(request.context.subject).toEqual({
+      identity: {
+        phones: [
+          { type: 'mobile', number: '07700900000' },
+          { type: 'landline', number: '02079460000' },
+        ],
+        emails: [
+          { type: 'personal', email: 'ada@example.com' },
+          { type: 'work', email: 'ada@work.example.com' },
+        ],
+        idNumbers: [{ type: 'NationalInsuranceNumber', idNumber: 'QQ123456C' }],
+        gender: 'F',
+        mothersMaidenName: 'Byron',
+        previousAddresses: [{ addressString: '1 Old Road' }],
+      },
+    });
+    expect(request.participants.map((p) => p.domainElementId)).toEqual([
+      'MobilePhone',
+      'LandlinePhone',
+      'PersonalEmail',
+      'WorkEmail',
+      'NationalInsuranceNumber',
+      'Gender',
+      'MothersMaidenName',
+      'PreviousAddresses',
+    ]);
+  });
+
+  it('reports each appended entry at its own index', () => {
+    expect(fieldsByGoPath({ 'PersonalEmail/email': 'a@example.com', 'WorkEmail/email': 'b@example.com' })).toEqual({
+      'context.subject.identity.emails.0.email': 'PersonalEmail/email',
+      'context.subject.identity.emails.1.email': 'WorkEmail/email',
+    });
   });
 });
 
