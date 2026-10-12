@@ -37,7 +37,13 @@ const INTERACTION = {
 
 beforeEach(() => {
   vi.resetModules();
-  for (const key of ['__goClient', '__lastOutstandingByInstance', '__lastInstructionsByInstance', '__completedStagesByInstance']) {
+  for (const key of [
+    '__goClient',
+    '__lastOutstandingByInstance',
+    '__lastInstructionsByInstance',
+    '__lastCollectableByInstance',
+    '__completedStagesByInstance',
+  ]) {
     delete (globalThis as Record<string, unknown>)[key];
   }
   seen = [];
@@ -58,6 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 async function client() {
@@ -109,6 +116,46 @@ describe('goApiClient', () => {
 
     expect((error as OnboardingException).code).toBe('VALIDATION_FAILED');
     expect((error as OnboardingException).fields).toEqual({ 'MobilePhone/number': 'Invalid phone number' });
+  });
+
+  it('routes a capture by the collected refs, not raw outstanding (document not listed as outstanding)', async () => {
+    // Meridian's document stage is not alwaysCollect, so the stage is found
+    // only from the list it is matched against.
+    vi.stubEnv('MARKET', 'meridian-health');
+    routes[FETCH_PATH] = () =>
+      json(200, {
+        ...INTERACTION,
+        interaction: { collects: [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'Selfie/selfieImage' }] },
+        outstanding: ['Selfie/selfieImage'],
+      });
+    let submitted: unknown;
+    routes[SUBMIT_PATH] = () => json(200, { status: 'success' });
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(input).pathname;
+      if (path === SUBMIT_PATH) submitted = JSON.parse(String(init?.body));
+      return routes[path]!({ url: input, authorization: null, hasSignal: true });
+    });
+    const goClient = await client();
+    const screen = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'aW1hZ2U=' });
+
+    expect(screen.interaction.stage).toBe('Document');
+    const subject = (submitted as { context: { subject: Record<string, unknown> } }).context.subject;
+    expect(subject.documents).toEqual([{ type: 'Primary', side1Image: 'aW1hZ2U=' }]);
+    expect(subject.biometrics).toBeUndefined();
+  });
+
+  it('treats a failed result.status as terminal, and a null classification as no decision', async () => {
+    const STATE_PATH = '/v2/captain/journey/state/fetch';
+    const steps = { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } };
+    routes[STATE_PATH] = () =>
+      json(200, { instanceId: 'inst-1', status: 'InProgress', result: { status: 'error', outcomeClassification: 'positive' }, context: steps });
+    const goClient = await client();
+    expect(await goClient.fetchState('inst-1')).toMatchObject({ status: 'Completed', decision: 'fail' });
+
+    routes[STATE_PATH] = () =>
+      json(200, { instanceId: 'inst-1', status: 'InProgress', result: { outcomeClassification: null }, context: steps });
+    expect((await goClient.fetchState('inst-1')).status).toBe('InProgress');
   });
 
   it('reports a malformed success body as upstream unavailable', async () => {
@@ -166,6 +213,18 @@ describe('buildSubmitRequest — contact and personal details', () => {
       'MothersMaidenName',
       'PreviousAddresses',
     ]);
+  });
+
+  it('does not resolve a ref by a leaf that belongs to another domain element', () => {
+    const request = buildSubmitRequest(
+      'inst-1',
+      'int-1',
+      { 'PreviousAddresses/postalCode': 'OX1 1AA', 'CurrentAddress/postalCode': 'SW1A 2AA' },
+      'https://example.com/terms',
+      'I agree.'
+    );
+
+    expect((request.context.subject.identity as Record<string, unknown>).currentAddress).toEqual({ postalCode: 'SW1A 2AA' });
   });
 
   it('reports each appended entry at its own index', () => {

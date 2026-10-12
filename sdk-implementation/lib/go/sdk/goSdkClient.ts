@@ -12,8 +12,8 @@ import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
 import { buildSdkSubmitRequest, START_SUBJECT_KEYS } from './buildSdkSubmitRequest';
 import { getAccessToken, invalidate } from './goSdkAuthService';
-import { GoInteractionView, GoStateView } from './goViews';
-import { isFailed, defaultInteractionMapper as mapper } from './sdkInteractionMapper';
+import { collectsOf, GoInteractionView, GoStateView } from './goViews';
+import { isFailed, resultFailed, defaultInteractionMapper as mapper } from './sdkInteractionMapper';
 import { startedInstanceId, toInteractionView, toStateView } from './sdkResponses';
 
 /**
@@ -27,23 +27,23 @@ import { startedInstanceId, toInteractionView, toStateView } from './sdkResponse
 const TIMEOUT_MS = 15_000;
 
 /**
- * One SDK client for the process. The global `customerAccess` is a token
- * provider the SDK resolves on every request, so a rotated token needs no
- * rebuild. It covers journeys.start and journeys.getState only:
+ * An SDK client carrying `token` as its `customerAccess`. Built per call —
+ * construction only assembles options, no connection is held — so the token
+ * a call used is the one `authorized` resolved, invalidates and retries with,
+ * and nothing survives a `next dev` reload holding a stale token provider.
+ * `customerAccess` covers journeys.start and journeys.getState only:
  * interactions.fetch/submit ignore it and take their token per call (see
  * `interactionSecurity`). Retries are off — start and submit are POSTs and
  * must not be replayed.
  */
-const globalForSdk = globalThis as unknown as { __goSdk?: Go };
-const go: Go =
-  globalForSdk.__goSdk ??
-  new Go({
+function goFor(token: string): Go {
+  return new Go({
     serverURL: sdkServerUrl(),
-    customerAccess: getAccessToken,
+    customerAccess: token,
     timeoutMs: TIMEOUT_MS,
     retryConfig: { strategy: 'none' },
   });
-globalForSdk.__goSdk = go;
+}
 
 /**
  * Fetch and submit carry their own security and never fall back to the
@@ -77,6 +77,8 @@ function remember<V>(cache: Map<string, V>, instanceId: string, value: V): void 
 
 const lastOutstandingByInstance = boundedCache<string[]>('__sdkLastOutstandingByInstance');
 const lastInstructionsByInstance = boundedCache<string[]>('__sdkLastInstructionsByInstance');
+/** `collects` refs (or `outstanding` when there are none) — the list the screen was chosen from, so a capture is routed by it too. */
+const lastCollectableByInstance = boundedCache<string[]>('__sdkLastCollectableByInstance');
 /** Stage names already submitted per instance — Go's `outstanding` never shrinks, so progress is tracked here. */
 const completedStagesByInstance = boundedCache<Set<string>>('__sdkCompletedStagesByInstance');
 
@@ -157,12 +159,31 @@ export function classifyStatus(status: number): OnboardingException {
 }
 
 /**
+ * A Go error status, with per-field errors when it is a 400/422 whose
+ * problems name submitted fields. Reads the raw body, not the SDK's parsed
+ * `ErrorResponse`, so it works whichever error class the body ended up in.
+ */
+function classifyGoFailure(status: number, body: string, fieldsByGoPath: Record<string, string>): OnboardingException {
+  const problems = goProblems(body);
+  console.warn(`GBG Go call failed: ${status} ${problems || body}`);
+  if ((status === 400 || status === 422) && Object.keys(fieldsByGoPath).length > 0) {
+    const fields = rejectedFields(problems, fieldsByGoPath);
+    if (Object.keys(fields).length > 0) {
+      return OnboardingException.validationFailed('Some of the details you entered could not be verified.', fields);
+    }
+  }
+  return classifyStatus(status);
+}
+
+/**
  * Translates whatever the SDK threw into the contract's error codes.
  *
  * Order matters: `ResponseValidationError` is a `GoError` (and, through a
  * loose `Symbol.hasInstance`, also passes `instanceof SDKValidationError`),
- * so it is checked first. It means the response did not match the SDK's
- * schema — on a 2XX that is a shape problem, not the customer's fault.
+ * so it is checked first. On a 2XX it means the response did not match the
+ * SDK's schema — a shape problem, not the customer's fault. On a 4XX it is
+ * usually a Go error body the SDK's strict `ErrorResponse` schema rejected
+ * (an entry missing `name` or `action`, say), which still names the fields.
  */
 export async function call<T>(request: () => Promise<T>, fieldsByGoPath: Record<string, string> = {}): Promise<T> {
   try {
@@ -170,20 +191,12 @@ export async function call<T>(request: () => Promise<T>, fieldsByGoPath: Record<
   } catch (e) {
     if (e instanceof OnboardingException) throw e;
     if (e instanceof ResponseValidationError) {
+      if (e.statusCode >= 400) throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath);
       console.warn(`GBG Go response did not match the SDK's schema (${e.statusCode}): ${e.body}`);
-      if (e.statusCode >= 400) throw classifyStatus(e.statusCode);
       throw OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
     }
     if (e instanceof GoError) {
-      const problems = goProblems(e.body);
-      console.warn(`GBG Go call failed: ${e.statusCode} ${problems || e.body}`);
-      if ((e.statusCode === 400 || e.statusCode === 422) && Object.keys(fieldsByGoPath).length > 0) {
-        const fields = rejectedFields(problems, fieldsByGoPath);
-        if (Object.keys(fields).length > 0) {
-          throw OnboardingException.validationFailed('Some of the details you entered could not be verified.', fields);
-        }
-      }
-      throw classifyStatus(e.statusCode);
+      throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath);
     }
     if (e instanceof SDKValidationError) {
       console.error('Request rejected by the SDK before sending', e.pretty());
@@ -210,7 +223,7 @@ function statusFrom(interaction: Interaction): JourneyStatus {
 
 async function fetchView(instanceId: string): Promise<GoInteractionView> {
   const response = await call(() =>
-    authorized((token) => go.interactions.fetch(interactionSecurity(token), { body: { instanceId } }))
+    authorized((token) => goFor(token).interactions.fetch(interactionSecurity(token), { body: { instanceId } }))
   );
   return toInteractionView(response);
 }
@@ -221,6 +234,8 @@ async function fetchInteraction(instanceId: string): Promise<SubmitInteractionRe
   // non-empty value let a stale Side2Required outlive the document screen.
   remember(lastOutstandingByInstance, instanceId, view.outstanding ?? []);
   remember(lastInstructionsByInstance, instanceId, view.instructions ?? []);
+  const collectable = collectsOf(view).map((collect) => collect.ref);
+  remember(lastCollectableByInstance, instanceId, collectable.length > 0 ? collectable : (view.outstanding ?? []));
   const interaction = mapper.toInteraction(view, completedStages(instanceId));
   return { status: statusFrom(interaction), interaction };
 }
@@ -251,8 +266,12 @@ async function resolveAttachment(
     return back;
   }
 
-  const fromStage = mapper.currentCaptureIsDocument(outstanding, completedStages(instanceId));
-  const document = fromStage ?? outstanding.some((o) => o.startsWith('PrimaryDocument/'));
+  // Routed by the collectable list the screen was chosen from, not raw
+  // `outstanding`: a document whose parent element is optional is in
+  // `collects` but never in `outstanding`, and would go out as a selfie.
+  const collectable = lastCollectableByInstance.get(instanceId) ?? outstanding;
+  const fromStage = mapper.currentCaptureIsDocument(collectable, completedStages(instanceId));
+  const document = fromStage ?? collectable.some((o) => o.startsWith('PrimaryDocument/'));
 
   const rewritten = { ...data };
   delete rewritten['attachmentRef'];
@@ -261,7 +280,7 @@ async function resolveAttachment(
 }
 
 async function fetchGoState(instanceId: string): Promise<GoStateView> {
-  const response = await call(() => authorized(() => go.journeys.getState({ body: { instanceId } })));
+  const response = await call(() => authorized((token) => goFor(token).journeys.getState({ body: { instanceId } })));
   const view = toStateView(response);
   if (!view) {
     console.warn(
@@ -299,7 +318,7 @@ function isRequestValidationError(e: unknown): boolean {
 async function start(request: StartJourneyRequest): Promise<string | undefined> {
   const started = await call(async () => {
     try {
-      return await authorized(() => go.journeys.start(request));
+      return await authorized((token) => goFor(token).journeys.start(request));
     } catch (e) {
       // A prefill the SDK's typed subject rejects (wrong types, say) fails
       // validation before anything is sent. Start without it rather than
@@ -307,7 +326,7 @@ async function start(request: StartJourneyRequest): Promise<string | undefined> 
       if (!isRequestValidationError(e) || request.context.subject === undefined) throw e;
       console.warn('The SDK rejected the journey prefill; starting without it', (e as SDKValidationError).pretty());
       delete request.context.subject;
-      return authorized(() => go.journeys.start(request));
+      return authorized((token) => goFor(token).journeys.start(request));
     }
   });
   return startedInstanceId(started);
@@ -340,7 +359,7 @@ export const goSdkClient: GoClient = {
     // schema and surfaces through `call` as a ResponseValidationError, so a
     // rejected submit is never marked complete.
     await call(
-      () => authorized((token) => go.interactions.submit(interactionSecurity(token), request)),
+      () => authorized((token) => goFor(token).interactions.submit(interactionSecurity(token), request)),
       fieldsByGoPath
     );
     if (submittedStage) recordStage(instanceId, submittedStage);
@@ -350,17 +369,22 @@ export const goSdkClient: GoClient = {
   async fetchState(instanceId): Promise<StateResponse> {
     const view = await fetchGoState(instanceId);
     const asRecord = mapper.toRecord(view);
-    // Same three-way terminal check as goApiClient.fetchState: Completed,
-    // Failed/Error, or a real decision with every module settled (Northbank
-    // settles on `refer` while its status stays InProgress).
-    const carriesRealResult = view.result?.outcomeClassification !== undefined;
+    // Same terminal check as goApiClient.fetchState: Completed, Failed/Error,
+    // a failed result.status (Go's authoritative signal — the journey ended
+    // in failure or was abandoned and will not move), or a real decision with
+    // every module settled (Northbank settles on `refer` while its status
+    // stays InProgress). `!= null`: an explicit null classification is not a
+    // decision.
+    const carriesRealResult = view.result?.outcomeClassification != null;
     const everyModuleSettled =
       asRecord.moduleRuns !== undefined &&
       asRecord.moduleRuns.length > 0 &&
       !asRecord.moduleRuns.some((run) => run.state === 'Running');
     const decided = carriesRealResult && everyModuleSettled;
     const status: JourneyStatus =
-      view.status?.toLowerCase() === 'completed' || isFailed(view.status) || decided ? 'Completed' : 'InProgress';
+      view.status?.toLowerCase() === 'completed' || isFailed(view.status) || resultFailed(view.result) || decided
+        ? 'Completed'
+        : 'InProgress';
     return { status, decision: asRecord.decision, moduleRuns: asRecord.moduleRuns };
   },
 

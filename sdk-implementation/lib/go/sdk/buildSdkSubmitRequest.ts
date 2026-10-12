@@ -105,12 +105,20 @@ const KNOWN: Record<string, FieldMapping> = {
   selfieImage: { domainElementId: 'Selfie', target: { kind: 'selfie' } },
 };
 
-/** The mapping for one submitted field: the key as sent, then its leaf after the last `/`. */
+/**
+ * The mapping for one submitted field: the key as sent, then its leaf after
+ * the last `/` — but only when the leaf's entry belongs to the same domain
+ * element as the ref. Leaf names repeat across elements
+ * (`PreviousAddresses/postalCode` and `CurrentAddress/postalCode`), and
+ * matching on the leaf alone would write a previous address's postcode over
+ * the current one.
+ */
 function forKey(key: string): FieldMapping | undefined {
   const known = KNOWN[key];
   if (known) return known;
-  if (key.includes('/')) return KNOWN[key.slice(key.lastIndexOf('/') + 1)];
-  return undefined;
+  if (!key.includes('/')) return undefined;
+  const byLeaf = KNOWN[key.slice(key.lastIndexOf('/') + 1)];
+  return byLeaf && byLeaf.domainElementId === key.slice(0, key.indexOf('/')) ? byLeaf : undefined;
 }
 
 /**

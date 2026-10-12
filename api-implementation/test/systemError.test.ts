@@ -51,4 +51,19 @@ describe('a module that could not run is not a decline', () => {
     expect(record.systemError).toBe(false);
     expect(record.title).toBe('We could not complete your verification');
   });
+
+  it('a failed result.status beats a positive classification', () => {
+    // Go documents result.status as authoritative: a journey can pass its
+    // evaluation and then fail or be abandoned before finishing.
+    const abandoned: GoStateResponse = {
+      instanceId: 'i-3',
+      status: 'InProgress',
+      context: { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } },
+      result: { status: 'error', outcomeClassification: 'positive' },
+    };
+    const record = mapper.toRecord(abandoned);
+    expect(record.decision).toBe('fail');
+    expect(record.systemError).toBe(true);
+    expect(record.title).toBe('We could not run your checks');
+  });
 });

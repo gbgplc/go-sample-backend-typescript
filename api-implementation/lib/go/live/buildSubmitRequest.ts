@@ -105,16 +105,18 @@ const KNOWN: Record<string, FieldMapping> = {
  * element 'CurrentAddress/building' data is missing from context" on a
  * screen the customer had already filled in.
  *
- * So: try the key as sent, then its leaf. Leaf names are unique across this
- * table, and matching `<Element>/<leaf>` on the leaf lands a ref at the same
- * path as the short name it duplicates.
+ * So: try the key as sent, then its leaf — but only when the leaf's entry
+ * belongs to the same domain element as the ref. Leaf names repeat across
+ * elements (`PreviousAddresses/postalCode` and `CurrentAddress/postalCode`
+ * share a leaf), and matching on the leaf alone would write a previous
+ * address's postcode over the current one.
  */
 function forKey(key: string): FieldMapping {
   const known = KNOWN[key];
   if (known) return known;
   if (key.includes('/')) {
     const byLeaf = KNOWN[key.slice(key.lastIndexOf('/') + 1)];
-    if (byLeaf) return byLeaf;
+    if (byLeaf && byLeaf.domainElementId === key.slice(0, key.indexOf('/'))) return byLeaf;
   }
   return { domainElementId: key, path: [key], wrap: 'none' };
 }
