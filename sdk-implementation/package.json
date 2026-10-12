@@ -1,0 +1,36 @@
+{
+  "name": "onboarding-service-ts-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Thin-proxy onboarding microservice — TypeScript/Next.js implementation built on the official GBG Go Core SDK (@gbg/go-core), contract-identical to api-implementation.",
+  "scripts": {
+    "dev:northbank": "cross-env MARKET=northbank GO_MODE=mock PORT=8091 next dev -p 8091",
+    "dev:northbank:live": "cross-env MARKET=northbank GO_MODE=live PORT=8091 next dev -p 8091",
+    "dev:meridian-health": "cross-env MARKET=meridian-health GO_MODE=mock PORT=8092 next dev -p 8092",
+    "dev:meridian-health:live": "cross-env MARKET=meridian-health GO_MODE=live PORT=8092 next dev -p 8092",
+    "dev:ridgeline-play": "cross-env MARKET=ridgeline-play GO_MODE=mock PORT=8093 next dev -p 8093",
+    "dev:ridgeline-play:live": "cross-env MARKET=ridgeline-play GO_MODE=live PORT=8093 next dev -p 8093",
+    "build": "next build",
+    "start:northbank": "cross-env MARKET=northbank GO_MODE=mock PORT=8091 next start -p 8091",
+    "start:northbank:live": "cross-env MARKET=northbank GO_MODE=live PORT=8091 next start -p 8091",
+    "start:meridian-health": "cross-env MARKET=meridian-health GO_MODE=mock PORT=8092 next start -p 8092",
+    "start:meridian-health:live": "cross-env MARKET=meridian-health GO_MODE=live PORT=8092 next start -p 8092",
+    "start:ridgeline-play": "cross-env MARKET=ridgeline-play GO_MODE=mock PORT=8093 next start -p 8093",
+    "start:ridgeline-play:live": "cross-env MARKET=ridgeline-play GO_MODE=live PORT=8093 next start -p 8093",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@gbg/go-core": "0.2.0-alpha.0",
+    "next": "14.2.35",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}
