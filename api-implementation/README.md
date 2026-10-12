@@ -1,11 +1,16 @@
-# Onboarding service (TypeScript)
+# Onboarding service (TypeScript) — API implementation
+
+One of two implementations in this repo: this one calls GBG Go v2 with
+hand-rolled `fetch` requests. See `../sdk-implementation/` for the sibling
+built on the official TypeScript SDK (`@gbg/go-core`), and the root
+`README.md` for how the two relate.
 
 The thin-proxy backend from *Market onboarding applications — front-end
 handoff*, section 1: holds the GBG Go client credentials, mints and refreshes
 access tokens, forwards interaction traffic, and keeps the session-to-instance
 mapping. Neither a Go access token nor a client secret ever reaches the
-browser. A Java implementation of the same contract exists alongside this one
-(`go-sample-backend`) — a front end must not be able to tell which it's
+browser. Java implementations of the same contract live in
+`go-sample-backend-java` — a front end must not be able to tell which it's
 talking to.
 
 ## Architecture
@@ -36,10 +41,14 @@ app/v1/                   Route Handlers — the 7 REST endpoints, paths matchin
   domain-element-shaped interaction into a screen, but carries no
   market-specific knowledge itself — which outstanding elements map to which
   screen, in what order, with what copy, is each market's `screenPlan` config
-  (`lib/config/markets/*.ts`). Meridian Health's plan is real, verified
-  content; a market with nothing configured there — Northbank and Ridgeline
-  Play today — gets a generic form built from whatever Go reports outstanding,
-  rather than a stall or a crash.
+  (`lib/config/markets/*.ts`). An element no configured stage claims gets a
+  generic form built from whatever Go reports outstanding, rather than a
+  stall or a crash.
+
+  Every Go call has a 15-second timeout. A 401/403 drops the cached token
+  and retries once with a freshly minted one. A 400/422 whose Go problems
+  name a submitted field (`context.subject.identity.phones.0.number: ...`)
+  comes back as a per-field validation error.
 
 One deployment fronts exactly one market — `MARKET` plus `GO_MODE` (env vars,
 set per npm script) select the brand config, resource ID, and port, matching
@@ -69,28 +78,35 @@ exactly as it does against the Java backend and the TypeScript mock transport.
 
 ## Running against real GBG Go
 
-Copy `.env.example` to `.env.local`, fill in the four values, then:
+Copy `.env.example` to `.env.local`, fill in `GBG_CLIENT_ID` and
+`GBG_CLIENT_SECRET`, then:
 
 ```
-npm run dev:meridian-health:live
+npm run dev:northbank:live          # :8081
+npm run dev:meridian-health:live    # :8082
+npm run dev:ridgeline-play:live     # :8083
 ```
 
-Only **Meridian Health** has a published journey and a populated `screenPlan`.
-Northbank and Ridgeline Play still carry placeholder resource IDs and will
-fail at journey start in live mode until journeys exist for them — same
-limitation the Java backend documents for itself.
+All three markets point at published journeys on the public platform (EU),
+the same resource IDs as go-sample-backend-java uses.
+
+**`fetch failed` / `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`?** Node uses its own
+bundled CA list, not the operating system's. Behind a TLS-inspecting proxy
+(Zscaler, for example) the Go host's certificate is issued by a root only
+your OS trusts, so every Go call fails while curl and Java work. On Node
+22.15+ set `NODE_OPTIONS=--use-system-ca` before `npm run`; on older Node,
+point `NODE_EXTRA_CA_CERTS` at the proxy's root certificate.
 
 ### Two tenant shapes
 
 The public documented platform and the nonprod *fabric* tenants disagree on
 both auth and host layout, so `lib/config/types.ts`'s `GoConfig` makes both
-configurable — see `lib/config/markets/meridianHealth.ts` for the fabric
-nonprod tenant's overrides (`authUrl`, `baseUrl`, `grantType: 'password'`,
-`scope: 'openid'`) versus `lib/config/markets/northbank.ts`/`ridgelinePlay.ts`
-for the public-platform defaults (`client_credentials`, `scope: 'gbg.token'`).
-Moving to a different tenant means changing those four fields plus
-`resourceId` — journey IDs are per-tenant, so this sample's will not exist on
-yours.
+configurable: `authUrl`, `baseUrl`, `grantType` and `scope`. Every market here
+uses the public-platform defaults (`client_credentials`, `scope:
+'gbg.token'`); a fabric tenant uses its Keycloak realm's token URL, its own
+`baseUrl`, `grantType: 'password'` and `scope: 'openid'`. Moving to a
+different tenant means changing those four fields plus `resourceId` —
+journey IDs are per-tenant, so this sample's will not exist on yours.
 
 Credentials always come from environment variables
 (`GBG_CLIENT_ID`/`GBG_CLIENT_SECRET`/`GBG_USERNAME`/`GBG_PASSWORD`), never
@@ -143,6 +159,9 @@ npm test
   idempotent-retry logic, the mock state machine (staleness, choice
   branching, the stage-plan "rail" builder), each market's screen-plan config,
   and the live-mode module-verdict mapping.
+- `goApiClient.test.ts` runs the live client against a fake Go (a stubbed
+  `fetch`): the token retry on 401/403, timeouts, and Go validation problems
+  mapped back to the submitted fields.
 
 ## What's a placeholder here
 
@@ -163,9 +182,11 @@ npm test
 - **Session storage** is in-memory and single-node (a `Map`, stashed on
   `globalThis` so `next dev`'s hot-reload doesn't wipe it) — swap for Redis
   or similar before running more than one instance.
-- **Live mode is structurally complete, not tenant-tested.** No real GBG Go
-  credentials were available while porting this — same caveat the Java
-  backend's own live mode carries for Northbank and Ridgeline Play.
+- **The submit field table is narrower than the Java one.** It has no entry
+  for `MobilePhone/number`, `PersonalEmail/email`, `Gender`,
+  `MothersMaidenName` or `NationalInsuranceNumber`; those fall back to a flat
+  `subject.<key>` placement, which Go does not read. `sdk-implementation`
+  uses the wider table go-sample-backend-java proved live.
 - **The default consent record URL and terms text** (`consentUrl` and
   `consentTerms` in each market's own config file under
   `lib/config/markets/`) are placeholders — override them for real before any
