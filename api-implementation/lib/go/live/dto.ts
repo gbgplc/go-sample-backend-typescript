@@ -28,7 +28,7 @@ export interface GoStartResponse {
 
 /** The `test_` prefix Go gives a test run's instance ID. */
 export function isTestInstance(instanceId: string | undefined): boolean {
-  return instanceId?.startsWith('test_') ?? false;
+  return !!instanceId && (instanceId.startsWith('sandbox_') || instanceId.startsWith('test_'));
 }
 
 /**
