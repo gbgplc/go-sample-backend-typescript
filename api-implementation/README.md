@@ -141,8 +141,9 @@ one. An invalid `go.testScenario` fails as soon as the backend loads.
 Safeguards:
 
 - If Go starts the journey without confirming a test run (`"test": false`,
-  or no `"test"` flag and no `test_` instance-ID prefix), the backend
-  abandons it before the first interaction, and logs its instance ID. Only
+  or no `"test"` flag and no `sandbox_` or `test_` instance-ID prefix), the
+  backend abandons it before the first interaction, and logs its instance
+  ID. Only
   Go's reply to the start can say whether the scenario took, so the instance
   exists by then, but none of the customer's details or captures ever reach
   it.
@@ -152,17 +153,35 @@ Safeguards:
   instead of reaching the customer as "Your session has ended" or a form
   error. The exception is a 400 or 422 naming a `context.` path: that is Go
   rejecting the prefill, and it stays a field error. A 404 can also mean the
-  journey itself doesn't exist; in live mode too, a 404 at start is reported
-  as a failed start, not an ended session. A 403 that
-  persists with a fresh token is logged as a likely sign that test
-  scenarios aren't enabled for the organisation.
+  journey itself doesn't exist; in live mode too, a 404 or 410 at start is
+  reported as a failed start, not an ended session. A 403 that persists
+  with a fresh token is logged as a likely sign that test scenarios aren't
+  enabled for the organisation.
+- None of these start failures is marked retryable: each is a
+  configuration fault, and on the abandon paths every retry would create
+  another Go instance.
 - The result screen of a test run carries a **Test run** summary row naming
   the scenario, so its outcome is never mistaken for a real verification.
+  The scenario is kept on the session, so the row lasts as long as the
+  session does.
 
-Status: covered by `goApiClientTestScenarios.test.ts`. Not yet run against
-GBG Go: the Test Scenarios feature has a known bug, and none of this
-sample's journeys have scenarios saved yet. Mirrors go-sample-backend-java's
+Status: covered by `goApiClientTestScenarios.test.ts`, and run against GBG
+Go on gbggo4-demo (2026-10-29): named and default scenarios start test
+runs, an unknown scenario is reported with Go's 404 reason, and an invalid
+`?mock_scenario=` gets a 400. Mirrors go-sample-backend-java's
 api-implementation.
+
+Two things seen there that this backend can't guard against:
+
+- Go starts a scenario saved on a *different* journey, still with
+  `"test": true`. Scenarios aren't scoped to a journey, so the mismatch
+  check can't catch a scenario name that belongs to another journey: check
+  the name against this market's journey in the Journey builder.
+- A journey whose mocked modules feed later modules can deadlock. Document
+  Classification returns its outcome but not `PrimaryDocument/classification`
+  or `AnchorImage`, so a module that needs them never runs, and Go abandons
+  the journey (`result.status: "abandoned"`). The record reports that as
+  "We could not run your checks".
 
 ### Two tenant shapes
 

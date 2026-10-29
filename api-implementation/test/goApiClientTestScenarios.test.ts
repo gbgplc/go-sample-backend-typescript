@@ -26,8 +26,8 @@ const START_PATH = '/v2/captain/journey/start';
 const FETCH_PATH = '/v2/captain/journey/interaction/fetch';
 const STATE_PATH = '/v2/captain/journey/state/fetch';
 
-const TEST_START = { instanceId: 'test_abc', status: 'started', test: true, scenario: 'northbank-pass' };
-const PROCESSING_FETCH = { instanceId: 'test_abc', journey: { status: 'InProgress' }, processing: true, outstanding: [] };
+const TEST_START = { instanceId: 'sandbox_abc', status: 'started', test: true, scenario: 'northbank-pass' };
+const PROCESSING_FETCH = { instanceId: 'sandbox_abc', journey: { status: 'InProgress' }, processing: true, outstanding: [] };
 
 beforeEach(() => {
   vi.resetModules();
@@ -37,7 +37,7 @@ beforeEach(() => {
     '__lastInstructionsByInstance',
     '__lastCollectableByInstance',
     '__completedStagesByInstance',
-    '__testScenarioByInstance',
+    '__sessionStore',
   ]) {
     delete (globalThis as Record<string, unknown>)[key];
   }
@@ -91,7 +91,7 @@ describe('goApiClient in test-scenarios mode', () => {
   it("starts on the market's default scenario when the front end names none, and only the start carries it", async () => {
     const started = await (await client()).startJourney('journey@v1', undefined, null);
 
-    expect(started.instanceId).toBe('test_abc');
+    expect(started.instanceId).toBe('sandbox_abc');
     expect(calls(START_PATH).map((c) => c.scenario)).toEqual(['northbank-pass']);
     expect(calls(FETCH_PATH).map((c) => c.scenario)).toEqual([null]);
   });
@@ -123,6 +123,7 @@ describe('goApiClient in test-scenarios mode', () => {
     try {
       const error = await failure((await client()).startJourney('journey@v1', undefined, null));
       expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+      expect(error.retryable).toBe(false);
       expect(seen).toEqual([]);
     } finally {
       markets.northbank.go.testScenario = configured;
@@ -135,13 +136,15 @@ describe('goApiClient in test-scenarios mode', () => {
     const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
     expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+    // Retrying would only create and abandon another instance.
+    expect(error.retryable).toBe(false);
     // No interaction fetch, so nothing further happens on the live instance.
     expect(calls(FETCH_PATH)).toEqual([]);
   });
 
   /** Go's explicit flag wins over the instance-ID prefix. */
   it('stops on an explicit "test": false even with a test_ prefix', async () => {
-    routes[START_PATH] = () => json(200, { instanceId: 'test_abc', status: 'started', test: false });
+    routes[START_PATH] = () => json(200, { instanceId: 'sandbox_abc', status: 'started', test: false });
 
     const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
@@ -150,11 +153,11 @@ describe('goApiClient in test-scenarios mode', () => {
   });
 
   it('still counts a start without the test flag on its test_ prefix', async () => {
-    routes[START_PATH] = () => json(200, { instanceId: 'test_abc', status: 'started' });
+    routes[START_PATH] = () => json(200, { instanceId: 'sandbox_abc', status: 'started' });
 
     const started = await (await client()).startJourney('journey@v1', undefined, null);
 
-    expect(started.instanceId).toBe('test_abc');
+    expect(started.instanceId).toBe('sandbox_abc');
   });
 
   it.each([400, 404, 422])(
@@ -166,6 +169,7 @@ describe('goApiClient in test-scenarios mode', () => {
       const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
       expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+      expect(error.retryable).toBe(false);
       expect(logged.mock.calls.flat().join(' ')).toContain('scenario not found');
     }
   );
@@ -188,18 +192,20 @@ describe('goApiClient in test-scenarios mode', () => {
     const error = await failure((await client()).startJourney('journey@v1', undefined, 'northbank-refer'));
 
     expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+    expect(error.retryable).toBe(false);
     expect(calls(FETCH_PATH)).toEqual([]);
   });
 
   /** There is no session yet, so "Your session has ended" would be wrong. */
-  it('does not report a live-mode 404 at start as an ended session', async () => {
+  it.each([404, 410])('does not report a live-mode %i at start as an ended session', async (status) => {
     vi.stubEnv('GO_MODE', 'live');
-    routes[START_PATH] = () => json(404, {});
+    routes[START_PATH] = () => json(status, {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
     expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+    expect(error.retryable).toBe(false);
   });
 
   /** The identity platform is an implementation detail; the customer gets the generic message. */
@@ -207,7 +213,7 @@ describe('goApiClient in test-scenarios mode', () => {
     routes['/as/token.oauth2'] = () => json(500, {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const error = await failure((await client()).fetchInteraction('test_abc'));
+    const error = await failure((await client()).fetchInteraction('sandbox_abc'));
 
     expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
     expect(error.message).toBe('Something went wrong on our end. Try again shortly.');
@@ -217,39 +223,46 @@ describe('goApiClient in test-scenarios mode', () => {
     routes[START_PATH] = () => json(403, { errors: [{ problem: 'Forbidden' }] });
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await failure((await client()).startJourney('journey@v1', undefined, null));
+    const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
     // The client mints a fresh token and retries once on a 403.
     expect(calls(START_PATH)).toHaveLength(2);
     expect(warned.mock.calls.flat().join(' ')).toContain('may not be enabled for this organisation');
+    // So the front end doesn't retry into another token mint.
+    expect(error.retryable).toBe(false);
   });
 
   it('does not blame the feature for other start failures', async () => {
     routes[START_PATH] = () => json(503, {});
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await failure((await client()).startJourney('journey@v1', undefined, null));
+    const error = await failure((await client()).startJourney('journey@v1', undefined, null));
 
     expect(warned.mock.calls.flat().join(' ')).not.toContain('may not be enabled');
+    // A Go outage can pass.
+    expect(error.retryable).toBe(true);
   });
 
-  it("names the scenario on a test run's record", async () => {
+  it("keeps the scenario with the session and names it on the record", async () => {
     routes[STATE_PATH] = () =>
-      json(200, { instanceId: 'test_abc', status: 'Completed', result: { status: 'complete', outcomeClassification: 'positive' } });
-    const goClient = await client();
+      json(200, { instanceId: 'sandbox_abc', status: 'Completed', result: { status: 'complete', outcomeClassification: 'positive' } });
+    const { sessionService } = await import('@/lib/session/sessionService');
 
-    await goClient.startJourney('journey@v1', undefined, null);
-    const record = await goClient.fetchRecord('test_abc');
+    const started = await sessionService.startSession(undefined, null);
+    const record = await sessionService.getRecord(started.body.sessionId, started.cookieToken);
 
     expect(record.summary[0]).toEqual({ k: 'Test run', v: 'Yes, scenario northbank-pass' });
   });
 
   it("adds no test row to a live run's record", async () => {
     vi.stubEnv('GO_MODE', 'live');
+    routes[START_PATH] = () => json(200, { instanceId: 'i-1', status: 'started' });
     routes[STATE_PATH] = () =>
       json(200, { instanceId: 'i-1', status: 'Completed', result: { outcomeClassification: 'positive' } });
+    const { sessionService } = await import('@/lib/session/sessionService');
 
-    const record = await (await client()).fetchRecord('i-1');
+    const started = await sessionService.startSession(undefined, null);
+    const record = await sessionService.getRecord(started.body.sessionId, started.cookieToken);
 
     expect(record.summary.some((row) => row.k === 'Test run')).toBe(false);
   });

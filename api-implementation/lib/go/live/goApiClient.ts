@@ -12,7 +12,6 @@ import {
   GoStartRequest,
   GoStartResponse,
   GoStateResponse,
-  isTestInstance,
   isTestRun,
 } from './dto';
 import { getAccessToken, invalidate } from './goTokenService';
@@ -118,15 +117,6 @@ function rememberOutstanding(instanceId: string, outstanding: string[] | undefin
   rememberBounded(lastOutstandingByInstance, instanceId, outstanding);
 }
 
-/**
- * The test scenario each test run started on, by instance — so the record
- * can say which scenario produced its outcome. Same bound and hot-reload
- * stash as the caches above.
- */
-const globalForScenarios = globalThis as unknown as { __testScenarioByInstance?: Map<string, string> };
-const testScenarioByInstance: Map<string, string> = globalForScenarios.__testScenarioByInstance ?? new Map();
-globalForScenarios.__testScenarioByInstance = testScenarioByInstance;
-
 /** The journey/start header that names the test scenario a run uses. */
 export const SCENARIO_HEADER = 'x-gbg-scenario';
 
@@ -148,7 +138,7 @@ export function scenarioFor(scenarioHint: string | null): string | undefined {
         'Test scenarios mode, but no scenario to start on: set go.testScenario for this market ' +
           'or open the app with ?mock_scenario=<scenario-name>'
       );
-      throw OnboardingException.upstreamUnavailable('This test journey has no test scenario configured.');
+      throw OnboardingException.upstreamMisconfigured('This test journey has no test scenario configured.');
     }
     return defaultTestScenario;
   }
@@ -275,35 +265,40 @@ const CONTEXT_PROBLEM = /(^|;\s*)context\.[^:;]*: /;
 
 /**
  * How a refused journey/start reaches the customer. There is no session yet,
- * so `call`'s defaults mislead here: a 404 would say "Your session has
+ * so `call`'s defaults mislead here: a 404 or 410 would say "Your session has
  * ended", and on a test scenario a 400 or 422 would show as a field error on
  * a screen the customer hasn't filled in. We don't know which of the three Go
  * uses for a scenario it can't run, so all three are covered — except a
  * 400/422 naming a `context.` path, which is Go rejecting the prefill and
  * stays a field error.
+ *
+ * Each of these is a configuration fault that retrying can't fix, so none is
+ * retryable.
  */
 function startRefusal(scenario: string | undefined): Refusal {
   return (status, problems) => {
     if (scenario && status === 403) {
+      // By now authedFetch has retried with a fresh token, so it isn't the token.
       console.warn(
         `GBG Go answered journey/start on test scenario '${scenario}' with 403, even with a fresh token. ` +
           'Test scenarios may not be enabled for this organisation.'
       );
-      return undefined;
+      return OnboardingException.upstreamMisconfigured('This test journey could not start on its test scenario.');
     }
-    if (status === 404 && !scenario) {
-      console.error("GBG Go answered journey/start with 404. Check this market's resourceId names a published journey.");
-      return OnboardingException.upstreamUnavailable('Could not start your verification. Try again shortly.');
+    const notFound = status === 404 || status === 410;
+    if (notFound && !scenario) {
+      console.error(`GBG Go answered journey/start with ${status}. Check this market's resourceId names a published journey.`);
+      return OnboardingException.upstreamMisconfigured('Could not start your verification.');
     }
     const scenarioRefused =
       scenario !== undefined && (status === 400 || status === 422) && !CONTEXT_PROBLEM.test(problems);
-    if (status === 404 || scenarioRefused) {
+    if (notFound || scenarioRefused) {
       console.error(
         `GBG Go refused journey/start on test scenario '${scenario}' (${status}): ${problems}. Check the scenario ` +
           "is saved on this journey (Journey builder → Test Scenarios) and its outcome names match the journey's " +
           "exactly. A 404 can also mean the journey itself doesn't exist: check this market's resourceId."
       );
-      return OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+      return OnboardingException.upstreamMisconfigured('This test journey could not start on its test scenario.');
     }
     return undefined;
   };
@@ -431,7 +426,7 @@ export const goApiClient: GoClient = {
           `Asked GBG Go for test scenario '${scenario}' but instance ${started.instanceId} did not start as a ` +
             `test run (test: ${started.test}). Abandoning it before any interaction, so no details reach it.`
         );
-        throw OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+        throw OnboardingException.upstreamMisconfigured('This test journey could not start on its test scenario.');
       }
       // A run on some other scenario is the silent swap scenarioFor refuses
       // to make: its outcomes would be read as this scenario's.
@@ -440,15 +435,14 @@ export const goApiClient: GoClient = {
           `Asked GBG Go for test scenario '${scenario}' but instance ${started.instanceId} started on scenario ` +
             `'${started.scenario}'. Abandoning it before any interaction.`
         );
-        throw OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+        throw OnboardingException.upstreamMisconfigured('This test journey could not start on its test scenario.');
       }
-      rememberBounded(testScenarioByInstance, started.instanceId, scenario);
       console.info(
         `Started test run ${started.instanceId} on scenario '${scenario}': modules return the scenario's outcomes, no live checks`
       );
     }
     const first = await fetchInteraction(started.instanceId);
-    return { instanceId: started.instanceId, status: first.status, interaction: first.interaction };
+    return { instanceId: started.instanceId, status: first.status, interaction: first.interaction, testScenario: scenario };
   },
 
   fetchInteraction,
@@ -517,16 +511,8 @@ export const goApiClient: GoClient = {
     return { status, decision: asRecord.decision, moduleRuns: asRecord.moduleRuns };
   },
 
-  /**
-   * A test run's record says so, with the scenario that produced it, so a
-   * scenario's outcome is never mistaken for a real verification. A summary
-   * row, so neither the response shape nor the front end changes.
-   */
+  /** A test run's "Test run" row is added by sessionService, which holds the scenario with the session. */
   async fetchRecord(instanceId): Promise<RecordResponse> {
-    const record = defaultInteractionMapper.toRecord(await fetchGoState(instanceId));
-    const scenario = testScenarioByInstance.get(instanceId);
-    if (scenario === undefined && !isTestInstance(instanceId)) return record;
-    const row = { k: 'Test run', v: scenario === undefined ? 'Yes' : `Yes, scenario ${scenario}` };
-    return { ...record, summary: [row, ...(record.summary ?? [])] };
+    return defaultInteractionMapper.toRecord(await fetchGoState(instanceId));
   },
 };

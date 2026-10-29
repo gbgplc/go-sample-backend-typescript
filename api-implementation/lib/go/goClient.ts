@@ -5,6 +5,8 @@ export interface GoStartResult {
   instanceId: string;
   status: JourneyStatus;
   interaction: Interaction;
+  /** The GBG Go test scenario the journey runs on; absent on a real run, so always absent in mock and live modes. */
+  testScenario?: string;
 }
 
 /**

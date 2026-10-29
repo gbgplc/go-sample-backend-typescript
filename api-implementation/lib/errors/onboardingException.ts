@@ -12,21 +12,21 @@ const ERROR_CODE_TABLE: Record<ErrorCode, { httpStatus: number; defaultRetryable
 
 /** Carries an ErrorCode straight through to the HTTP response as the contract's error envelope. */
 export class OnboardingException extends Error {
+  readonly retryable: boolean;
+
   private constructor(
     readonly code: ErrorCode,
     message: string,
-    readonly fields?: Record<string, string>
+    readonly fields?: Record<string, string>,
+    retryable: boolean = ERROR_CODE_TABLE[code].defaultRetryable
   ) {
     super(message);
     this.name = 'OnboardingException';
+    this.retryable = retryable;
   }
 
   get httpStatus(): number {
     return ERROR_CODE_TABLE[this.code].httpStatus;
-  }
-
-  get retryable(): boolean {
-    return ERROR_CODE_TABLE[this.code].defaultRetryable;
   }
 
   static validationFailed(message: string, fields?: Record<string, string>): OnboardingException {
@@ -43,6 +43,17 @@ export class OnboardingException extends Error {
 
   static upstreamUnavailable(message: string): OnboardingException {
     return new OnboardingException('UPSTREAM_UNAVAILABLE', message);
+  }
+
+  /**
+   * Go can't do this, and asking again won't change that — a configuration
+   * fault such as a journey or test scenario that doesn't exist. Same code as
+   * `upstreamUnavailable`, but not retryable, so the client doesn't offer
+   * "Try again" (which, at journey start, would create another Go instance
+   * each time). Mirrors Java's OnboardingException.upstreamMisconfigured.
+   */
+  static upstreamMisconfigured(message: string): OnboardingException {
+    return new OnboardingException('UPSTREAM_UNAVAILABLE', message, undefined, false);
   }
 
   static rateLimited(message: string): OnboardingException {

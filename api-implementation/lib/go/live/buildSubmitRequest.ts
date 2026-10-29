@@ -29,6 +29,7 @@ type Wrap =
   | 'idNumber'
   | 'ssn'
   | 'previousAddress'
+  | 'previousAddressPart'
   | 'documentSide1'
   | 'documentSide2'
   | 'selfie';
@@ -37,6 +38,8 @@ interface FieldMapping {
   domainElementId: string;
   path: string[];
   wrap: Wrap;
+  /** For previousAddressPart: the address component, e.g. postalCode. */
+  part?: string;
 }
 
 const KNOWN: Record<string, FieldMapping> = {
@@ -110,13 +113,21 @@ const KNOWN: Record<string, FieldMapping> = {
  * elements (`PreviousAddresses/postalCode` and `CurrentAddress/postalCode`
  * share a leaf), and matching on the leaf alone would write a previous
  * address's postcode over the current one.
+ *
+ * A previous-address component goes into the first previousAddresses[]
+ * entry instead, with every other component of the same address.
  */
 function forKey(key: string): FieldMapping {
   const known = KNOWN[key];
   if (known) return known;
   if (key.includes('/')) {
-    const byLeaf = KNOWN[key.slice(key.lastIndexOf('/') + 1)];
-    if (byLeaf && byLeaf.domainElementId === key.slice(0, key.indexOf('/'))) return byLeaf;
+    const element = key.slice(0, key.indexOf('/'));
+    const leaf = key.slice(key.lastIndexOf('/') + 1);
+    if (element === 'PreviousAddresses') {
+      return { domainElementId: element, path: ['identity', 'previousAddresses'], wrap: 'previousAddressPart', part: leaf };
+    }
+    const byLeaf = KNOWN[leaf];
+    if (byLeaf && byLeaf.domainElementId === element) return byLeaf;
   }
   return { domainElementId: key, path: [key], wrap: 'none' };
 }
@@ -166,12 +177,10 @@ function place(subject: Record<string, unknown>, mapping: FieldMapping, value: u
   const at = `context.subject.${mapping.path.join('.')}`;
   const text = String(value);
   switch (mapping.wrap) {
-    case 'phone':
-      cursor[leaf] = [{ type: 'mobile', number: text }];
-      return `${at}.0.number`;
     // Appended, not replaced: a screen collecting a mobile and a landline (or
     // a personal and a work email) sends them as separate fields, and the
     // second would otherwise overwrite the first.
+    case 'phone':
     case 'phoneMobile':
       return `${at}.${append(cursor, leaf, { type: 'mobile', number: text })}.number`;
     case 'phoneLandline':
@@ -188,6 +197,15 @@ function place(subject: Record<string, unknown>, mapping: FieldMapping, value: u
       return `${at}.${append(cursor, leaf, { type: 'SSN', idNumber: text })}.idNumber`;
     case 'previousAddress':
       return `${at}.${append(cursor, leaf, { addressString: text })}.addressString`;
+    case 'previousAddressPart': {
+      const existing = cursor[leaf];
+      const addresses = Array.isArray(existing) ? (existing as Record<string, unknown>[]) : [];
+      if (!Array.isArray(existing)) cursor[leaf] = addresses;
+      if (addresses.length === 0) addresses.push({});
+      const part = mapping.part!;
+      addresses[0]![part] = part === 'country' ? countryCode(text) : value;
+      return `${at}.0.${part}`;
+    }
     case 'documentSide1':
       mergeDocument(cursor, leaf, 'side1Image', text);
       return `${at}.0.side1Image`;

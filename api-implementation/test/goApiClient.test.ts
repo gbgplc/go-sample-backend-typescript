@@ -158,6 +158,36 @@ describe('goApiClient', () => {
     expect((await goClient.fetchState('inst-1')).status).toBe('InProgress');
   });
 
+  /** A deadlocked journey, from gbggo4-demo (2026-10-29, sandbox_QPgHrNztUswy5tZySLOUfe). */
+  it('treats an abandoned result as a system error, whatever the journey status', async () => {
+    const STATE_PATH = '/v2/captain/journey/state/fetch';
+    const abandoned = {
+      status: 'abandoned',
+      errors: [{ code: 'MODULE_DECLARED_OUTPUT_MISSING' }, { code: 'JOURNEY_ABANDONED' }],
+    };
+    const steps = { process: { steps: [{ name: 'Document Classification', result: { status: 'complete' } }] } };
+    routes[STATE_PATH] = () => json(200, { instanceId: 'inst-1', status: 'InProgress', result: abandoned, context: steps });
+    const goClient = await client();
+
+    expect(await goClient.fetchState('inst-1')).toMatchObject({ status: 'Completed', decision: 'fail' });
+    expect(await goClient.fetchRecord('inst-1')).toMatchObject({ systemError: true, title: 'We could not run your checks' });
+  });
+
+  /** The interaction screen agrees with the record. */
+  it('does not show a Completed journey with a failed result as verified', async () => {
+    routes[FETCH_PATH] = () =>
+      json(200, {
+        instanceId: 'inst-1',
+        journey: { status: 'Completed' },
+        result: { status: 'error', outcomeClassification: 'positive', outcome: 'Decision: Accept' },
+      });
+
+    const { interaction } = await (await client()).fetchInteraction('inst-1');
+
+    expect(interaction).toMatchObject({ kind: 'result', decision: 'fail' });
+    expect(interaction.title).not.toBe('Verification complete');
+  });
+
   it('reports a malformed success body as upstream unavailable', async () => {
     routes[FETCH_PATH] = () => new Response('not json', { status: 200 });
 
@@ -224,7 +254,36 @@ describe('buildSubmitRequest — contact and personal details', () => {
       'I agree.'
     );
 
-    expect((request.context.subject.identity as Record<string, unknown>).currentAddress).toEqual({ postalCode: 'SW1A 2AA' });
+    const identity = request.context.subject.identity as Record<string, unknown>;
+    expect(identity.currentAddress).toEqual({ postalCode: 'SW1A 2AA' });
+    expect(identity.previousAddresses).toEqual([{ postalCode: 'OX1 1AA' }]);
+  });
+
+  it("places a previous address's components together in its own entry", () => {
+    const data = { 'PreviousAddresses/building': '1', 'PreviousAddresses/postalCode': 'OX1 1AA', 'PreviousAddresses/country': 'United Kingdom' };
+
+    const request = buildSubmitRequest('inst-1', 'int-1', data, 'https://example.com/terms', 'I agree.');
+
+    expect(request.context.subject).toEqual({
+      identity: { previousAddresses: [{ building: '1', postalCode: 'OX1 1AA', country: 'GBR' }] },
+    });
+    expect(request.participants).toEqual([{ domainElementId: 'PreviousAddresses' }]);
+    expect(fieldsByGoPath(data)['context.subject.identity.previousAddresses.0.postalCode']).toBe('PreviousAddresses/postalCode');
+  });
+
+  it('keeps a landline when a mobile number follows it', () => {
+    const request = buildSubmitRequest(
+      'inst-1',
+      'int-1',
+      { 'LandlinePhone/number': '02079460000', mobileNumber: '07700900000' },
+      'https://example.com/terms',
+      'I agree.'
+    );
+
+    expect((request.context.subject.identity as Record<string, unknown>).phones).toEqual([
+      { type: 'landline', number: '02079460000' },
+      { type: 'mobile', number: '07700900000' },
+    ]);
   });
 
   it('reports each appended entry at its own index', () => {

@@ -172,7 +172,8 @@ export function isFailed(goStatus: string | undefined): boolean {
  * evaluation and then fail before finishing (a module's terminal error, or
  * the platform abandoning it on a deadlock or timeout), leaving a positive
  * classification beside `status: "error"` — and that is not a pass. Go
- * reports an elapsed deadline as `error` today; `timeout` is accepted too.
+ * reports an elapsed deadline as `error` today; `timeout` is accepted too. A
+ * deadlocked journey reports `abandoned` (gbggo4-demo, 2026-10-29).
  */
 export function resultFailed(result: { status?: string } | undefined): boolean {
   const status = result?.status?.toLowerCase();
@@ -475,7 +476,12 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // arrive. JourneyStatus has no Failed member, so this surfaces as what
     // that contract can represent: a terminal result screen carrying a fail
     // decision.
-    if (isFailed(goStatus)) {
+    //
+    // A failed result.status reads the same whatever the journey status
+    // beside it, as in toRecord: otherwise a Completed journey whose result
+    // is error or abandoned shows "Verification complete" here while its
+    // record says the checks could not run.
+    if (isFailed(goStatus) || resultFailed(response.result)) {
       return {
         interactionId,
         kind: 'result',

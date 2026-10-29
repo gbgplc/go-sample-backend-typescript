@@ -26,15 +26,15 @@ export interface GoStartResponse {
   scenario?: string;
 }
 
-/** The `test_` prefix Go gives a test run's instance ID. */
+/** Go gives a test run's instance ID a `sandbox_` prefix (gbggo4-demo, 2026-10-29); `test_` is accepted too. */
 export function isTestInstance(instanceId: string | undefined): boolean {
   return !!instanceId && (instanceId.startsWith('sandbox_') || instanceId.startsWith('test_'));
 }
 
 /**
  * A test run, by Go's own flag when it sent one — `"test": false` means not
- * a test run, whatever the instance ID looks like — and by the `test_`
- * instance-ID prefix only when it didn't.
+ * a test run, whatever the instance ID looks like — and by the instance-ID
+ * prefix only when it didn't.
  */
 export function isTestRun(started: GoStartResponse): boolean {
   return typeof started.test === 'boolean' ? started.test : isTestInstance(started.instanceId);

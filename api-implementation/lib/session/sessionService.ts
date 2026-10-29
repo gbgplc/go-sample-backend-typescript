@@ -90,7 +90,7 @@ export const sessionService = {
     const cookieToken = randomUUID();
     const initialInteractionId = result.interaction?.interactionId ?? null;
 
-    const session = new Session(sessionId, cookieToken, result.instanceId, initialInteractionId);
+    const session = new Session(sessionId, cookieToken, result.instanceId, initialInteractionId, result.testScenario);
     sessionStore.save(session);
 
     return {
@@ -149,10 +149,18 @@ export const sessionService = {
     });
   },
 
+  /**
+   * A test run's record says so, with the scenario that produced it, so a
+   * scenario's outcome is never mistaken for a real verification. A summary
+   * row, so neither the response shape nor the front end changes.
+   */
   async getRecord(sessionId: string, cookieToken: string | null | undefined): Promise<RecordResponse> {
     const session = authorize(sessionId, cookieToken);
     const goClient = await getGoClient();
-    return goClient.fetchRecord(session.goInstanceId);
+    const record = await goClient.fetchRecord(session.goInstanceId);
+    if (session.testScenario === undefined) return record;
+    const row = { k: 'Test run', v: `Yes, scenario ${session.testScenario}` };
+    return { ...record, summary: [row, ...(record.summary ?? [])] };
   },
 
   /**
