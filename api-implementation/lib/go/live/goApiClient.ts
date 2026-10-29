@@ -3,8 +3,9 @@ import { marketConfig, resolveGoBaseUrl } from '../../config';
 import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
 import { buildSubmitRequest, fieldsByGoPath } from './buildSubmitRequest';
-import { defaultInteractionMapper, isFailed } from './defaultInteractionMapper';
+import { defaultInteractionMapper, isFailed, resultFailed } from './defaultInteractionMapper';
 import {
+  collectsOf,
   GoErrorEnvelope,
   GoInstanceRequest,
   GoInteractionFetchResponse,
@@ -90,6 +91,27 @@ function rememberInstructions(instanceId: string, instructions: string[] | undef
   if (lastInstructionsByInstance.size > MAX_CACHED_INSTANCES) {
     const oldest = lastInstructionsByInstance.keys().next().value;
     if (oldest !== undefined) lastInstructionsByInstance.delete(oldest);
+  }
+}
+
+/**
+ * Last `collects` refs seen per instance (falling back to `outstanding` when
+ * the interaction carries none) — the list the screen was chosen from. A
+ * capture is routed by the same list, or a document the journey collects but
+ * does not list as outstanding renders the document screen and then goes out
+ * as a selfie. Mirrors go-sample-backend-java's lastCollectableByInstance.
+ */
+const globalForCollectable = globalThis as unknown as { __lastCollectableByInstance?: Map<string, string[]> };
+const lastCollectableByInstance: Map<string, string[]> =
+  globalForCollectable.__lastCollectableByInstance ?? new Map();
+globalForCollectable.__lastCollectableByInstance = lastCollectableByInstance;
+
+function rememberCollectable(instanceId: string, collectable: string[]): void {
+  lastCollectableByInstance.delete(instanceId);
+  lastCollectableByInstance.set(instanceId, collectable);
+  if (lastCollectableByInstance.size > MAX_CACHED_INSTANCES) {
+    const oldest = lastCollectableByInstance.keys().next().value;
+    if (oldest !== undefined) lastCollectableByInstance.delete(oldest);
   }
 }
 
@@ -216,17 +238,16 @@ async function fetchInteraction(instanceId: string): Promise<SubmitInteractionRe
   if (!response) {
     throw OnboardingException.upstreamUnavailable('Could not read your verification status. Try again shortly.');
   }
-  rememberOutstanding(instanceId, response.outstanding);
-  rememberInstructions(instanceId, response.instructions);
+  // Always overwritten, empty when Go omits the field: keeping the last
+  // non-empty value let a stale Side2Required outlive the document screen
+  // and route the selfie into side2Image (found and fixed in
+  // go-sample-backend-java).
+  rememberOutstanding(instanceId, response.outstanding ?? []);
+  rememberInstructions(instanceId, response.instructions ?? []);
+  const collectable = collectsOf(response).map((collect) => collect.ref);
+  rememberCollectable(instanceId, collectable.length > 0 ? collectable : (response.outstanding ?? []));
   const interaction = defaultInteractionMapper.toInteraction(response, completedStages(instanceId));
   return { status: statusFrom(interaction), interaction };
-}
-
-async function fetchOutstanding(instanceId: string): Promise<string[]> {
-  const response = await call<GoInteractionFetchResponse>(() =>
-    authedFetch('journey/interaction/fetch', { instanceId } satisfies GoInstanceRequest)
-  );
-  return response?.outstanding ?? [];
 }
 
 /**
@@ -246,10 +267,11 @@ async function resolveAttachment(
   const ref = data?.['attachmentRef'];
   if (ref === undefined) return data;
 
-  let outstanding = lastOutstandingByInstance.get(instanceId);
-  if (!outstanding) {
-    outstanding = await fetchOutstanding(instanceId);
+  // Cache miss: one full fetch populates every cache read below.
+  if (!lastOutstandingByInstance.has(instanceId)) {
+    await fetchInteraction(instanceId);
   }
+  const outstanding = lastOutstandingByInstance.get(instanceId) ?? [];
   // The back of the document, when Go has asked for it. Checked first: by
   // this point side 1 is submitted and the document stage counts as
   // completed, so the stage-based check below would read the capture as the
@@ -267,8 +289,13 @@ async function resolveAttachment(
   // advertise the element: a lazily collected document is never listed, so
   // every capture reads as a selfie and the document lands in
   // subject.biometrics where Document Classification never sees it.
-  const fromStage = defaultInteractionMapper.currentCaptureIsDocument(outstanding, completedStages(instanceId));
-  const document = fromStage ?? outstanding.some((o) => o.startsWith('PrimaryDocument/'));
+  //
+  // Routed by the collectable list the screen was chosen from, not raw
+  // `outstanding`: a document whose parent element is optional is in
+  // `collects` but never in `outstanding`.
+  const collectable = lastCollectableByInstance.get(instanceId) ?? outstanding;
+  const fromStage = defaultInteractionMapper.currentCaptureIsDocument(collectable, completedStages(instanceId));
+  const document = fromStage ?? collectable.some((o) => o.startsWith('PrimaryDocument/'));
 
   const rewritten = { ...data };
   delete rewritten['attachmentRef'];
@@ -344,15 +371,23 @@ export const goApiClient: GoClient = {
     // decision is real only once Go sent a result carrying a classification
     // and every module that ran has stopped running. Mirrors the Java
     // backend's fetchState.
-    const carriesRealResult = response.result?.outcomeClassification !== undefined;
+    //
+    // `!= null`, not `!== undefined`: Go may send the field as an explicit
+    // null while the journey is between modules, which is not a decision.
+    const carriesRealResult = response.result?.outcomeClassification != null;
     const everyModuleSettled =
       asRecord.moduleRuns !== undefined &&
       asRecord.moduleRuns.length > 0 &&
       !asRecord.moduleRuns.some((run) => run.state === 'Running');
     const decided = carriesRealResult && everyModuleSettled;
 
+    // A result.status of error is terminal too, whatever the journey status
+    // says: the journey ended in failure or was abandoned and will not move.
     const status: JourneyStatus =
-      response.status?.toLowerCase() === 'completed' || isFailed(response.status) || decided
+      response.status?.toLowerCase() === 'completed' ||
+      isFailed(response.status) ||
+      resultFailed(response.result) ||
+      decided
         ? 'Completed'
         : 'InProgress';
     return { status, decision: asRecord.decision, moduleRuns: asRecord.moduleRuns };
