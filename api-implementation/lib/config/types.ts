@@ -44,6 +44,14 @@ export interface GoConfig {
   scope: string;
   grantType: 'client_credentials' | 'password';
   baseUrl?: string;
+  /**
+   * GO_MODE=test-scenarios only: the test scenario a journey starts on when
+   * the front end names none (it can, with ?mock_scenario=). The name of a
+   * scenario saved on this market's journey in the Journey builder
+   * (journey → Test Scenarios): letters, numbers, _ and -, up to 64
+   * characters.
+   */
+  testScenario?: string;
 }
 
 export interface AppConfig {

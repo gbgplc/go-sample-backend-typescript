@@ -13,7 +13,7 @@ export const northbank: MarketConfig = {
     accentSoft: '#F5F5FC',
     helpLine: 'Call 0800 000 000, or carry on in a branch with the same reference.',
     journeyName: 'UK retail account opening',
-    resourceId: 'f3d875bc2ebff66f557fb177646f4c80e453d8d064b92a53fd1079edded1ea91@5q2gadns',
+    resourceId: '71da427957b893eb008c13678b72dcf05cfe50aff0b6479f53bc0a27ff23850c@r91oi63g',
     // 3000 is the app's pinned port; 3010 is a fallback for when something
     // else already holds 3000.
     corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:3010'],
@@ -36,6 +36,11 @@ export const northbank: MarketConfig = {
     baseUrl: 'https://eu.platform.go.gbgplc.com/v2/captain/',
     grantType: 'client_credentials',
     scope: 'gbg.token',
+    // GO_MODE=test-scenarios only: the GBG Go test scenario a journey starts
+    // on unless the front end names another with ?mock_scenario=. A suggested
+    // name: save a scenario with it on this journey (Journey builder → Test
+    // Scenarios), or change this to match yours.
+    testScenario: 'northbank-pass',
   },
   // Live-mode screens for this journey (defaultInteractionMapper): which
   // domain elements map to which screen, in collection order.

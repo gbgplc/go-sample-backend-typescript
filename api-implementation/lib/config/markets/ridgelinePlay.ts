@@ -13,7 +13,7 @@ export const ridgelinePlay: MarketConfig = {
     accentSoft: '#FFEDE5',
     helpLine: 'Live chat is open 24 hours. Safer gambling tools are in Account.',
     journeyName: 'GB player onboarding',
-    resourceId: '1d10f195ec2d11e2d7a2d5ca8f2b77ebe4e940da102f857b300102fa0b2e4cde@5juix16t',
+    resourceId: 'f450a552d8d236f6835eb98218229b45527290b8695ec19891505936bb9ff485@1slf8i7y',
     corsAllowedOrigins: ['http://localhost:3002'],
     consentUrl: 'https://ridgelineplay.example/consent/age-verification-v1',
     consentTerms: 'I agree that Ridgeline Play may use my details to verify my age and identity.',
@@ -34,6 +34,11 @@ export const ridgelinePlay: MarketConfig = {
     baseUrl: 'https://eu.platform.go.gbgplc.com/v2/captain/',
     grantType: 'client_credentials',
     scope: 'gbg.token',
+    // GO_MODE=test-scenarios only: the GBG Go test scenario a journey starts
+    // on unless the front end names another with ?mock_scenario=. A suggested
+    // name: save a scenario with it on this journey (Journey builder → Test
+    // Scenarios), or change this to match yours.
+    testScenario: 'ridgeline-play-pass',
   },
   // Live-mode screens for this journey (defaultInteractionMapper): which
   // domain elements map to which screen, in collection order.
