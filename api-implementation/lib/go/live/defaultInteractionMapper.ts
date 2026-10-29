@@ -176,7 +176,7 @@ export function isFailed(goStatus: string | undefined): boolean {
  */
 export function resultFailed(result: { status?: string } | undefined): boolean {
   const status = result?.status?.toLowerCase();
-  return status === 'error' || status === 'timeout';
+  return status === 'error' || status === 'timeout' || status === 'abandoned';
 }
 
 function mapStatus(goStatus: string | undefined, processing: boolean | undefined): JourneyStatus {
