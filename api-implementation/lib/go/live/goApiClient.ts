@@ -1,5 +1,5 @@
 import { Interaction, JourneyStatus, RecordResponse, StateResponse, SubmitInteractionResponse } from '../../dto/types';
-import { marketConfig, resolveGoBaseUrl } from '../../config';
+import { defaultTestScenario, goMode, marketConfig, resolveGoBaseUrl, SCENARIO_NAME } from '../../config';
 import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
 import { buildSubmitRequest, fieldsByGoPath } from './buildSubmitRequest';
@@ -12,6 +12,8 @@ import {
   GoStartRequest,
   GoStartResponse,
   GoStateResponse,
+  isTestInstance,
+  isTestRun,
 } from './dto';
 import { getAccessToken, invalidate } from './goTokenService';
 
@@ -35,6 +37,17 @@ import { getAccessToken, invalidate } from './goTokenService';
  * wipe it out from under an in-flight live-mode session on every file save.
  */
 const MAX_CACHED_INSTANCES = 10_000;
+
+/** Sets `instanceId` as the most recently used entry, evicting the least recently used past the bound. */
+function rememberBounded<V>(cache: Map<string, V>, instanceId: string, value: V): void {
+  cache.delete(instanceId);
+  cache.set(instanceId, value);
+  if (cache.size > MAX_CACHED_INSTANCES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+}
+
 const globalForGoApiClient = globalThis as unknown as { __lastOutstandingByInstance?: Map<string, string[]> };
 const lastOutstandingByInstance: Map<string, string[]> =
   globalForGoApiClient.__lastOutstandingByInstance ?? new Map();
@@ -66,12 +79,7 @@ function completedStages(instanceId: string): Set<string> {
 function recordStage(instanceId: string, stageName: string): void {
   const done = completedStagesByInstance.get(instanceId) ?? new Set<string>();
   done.add(stageName);
-  completedStagesByInstance.delete(instanceId);
-  completedStagesByInstance.set(instanceId, done);
-  if (completedStagesByInstance.size > MAX_CACHED_INSTANCES) {
-    const oldest = completedStagesByInstance.keys().next().value;
-    if (oldest !== undefined) completedStagesByInstance.delete(oldest);
-  }
+  rememberBounded(completedStagesByInstance, instanceId, done);
 }
 
 /**
@@ -86,12 +94,7 @@ globalForInstructions.__lastInstructionsByInstance = lastInstructionsByInstance;
 
 function rememberInstructions(instanceId: string, instructions: string[] | undefined): void {
   if (!instructions) return;
-  lastInstructionsByInstance.delete(instanceId);
-  lastInstructionsByInstance.set(instanceId, instructions);
-  if (lastInstructionsByInstance.size > MAX_CACHED_INSTANCES) {
-    const oldest = lastInstructionsByInstance.keys().next().value;
-    if (oldest !== undefined) lastInstructionsByInstance.delete(oldest);
-  }
+  rememberBounded(lastInstructionsByInstance, instanceId, instructions);
 }
 
 /**
@@ -107,31 +110,66 @@ const lastCollectableByInstance: Map<string, string[]> =
 globalForCollectable.__lastCollectableByInstance = lastCollectableByInstance;
 
 function rememberCollectable(instanceId: string, collectable: string[]): void {
-  lastCollectableByInstance.delete(instanceId);
-  lastCollectableByInstance.set(instanceId, collectable);
-  if (lastCollectableByInstance.size > MAX_CACHED_INSTANCES) {
-    const oldest = lastCollectableByInstance.keys().next().value;
-    if (oldest !== undefined) lastCollectableByInstance.delete(oldest);
-  }
+  rememberBounded(lastCollectableByInstance, instanceId, collectable);
 }
 
 function rememberOutstanding(instanceId: string, outstanding: string[] | undefined): void {
   if (!outstanding) return;
-  lastOutstandingByInstance.delete(instanceId);
-  lastOutstandingByInstance.set(instanceId, outstanding);
-  if (lastOutstandingByInstance.size > MAX_CACHED_INSTANCES) {
-    const oldest = lastOutstandingByInstance.keys().next().value;
-    if (oldest !== undefined) lastOutstandingByInstance.delete(oldest);
+  rememberBounded(lastOutstandingByInstance, instanceId, outstanding);
+}
+
+/**
+ * The test scenario each test run started on, by instance — so the record
+ * can say which scenario produced its outcome. Same bound and hot-reload
+ * stash as the caches above.
+ */
+const globalForScenarios = globalThis as unknown as { __testScenarioByInstance?: Map<string, string> };
+const testScenarioByInstance: Map<string, string> = globalForScenarios.__testScenarioByInstance ?? new Map();
+globalForScenarios.__testScenarioByInstance = testScenarioByInstance;
+
+/** The journey/start header that names the test scenario a run uses. */
+export const SCENARIO_HEADER = 'x-gbg-scenario';
+
+/**
+ * The test scenario this journey starts on: the front end's ?mock_scenario=
+ * when it names one, otherwise the market's go.testScenario. Undefined
+ * outside test-scenarios mode.
+ *
+ * A name that isn't a valid scenario name is refused rather than swapped for
+ * the default: the default is usually a pass scenario, and a tester who asked
+ * for the refer path and quietly got an approval would conclude the refer
+ * path works.
+ */
+export function scenarioFor(scenarioHint: string | null): string | undefined {
+  if (goMode !== 'test-scenarios') return undefined;
+  if (scenarioHint === null || scenarioHint.trim() === '') {
+    if (defaultTestScenario === undefined) {
+      console.error(
+        'Test scenarios mode, but no scenario to start on: set go.testScenario for this market ' +
+          'or open the app with ?mock_scenario=<scenario-name>'
+      );
+      throw OnboardingException.upstreamUnavailable('This test journey has no test scenario configured.');
+    }
+    return defaultTestScenario;
   }
+  const named = scenarioHint.trim();
+  if (!SCENARIO_NAME.test(named)) {
+    // The value itself is not logged: it comes straight from the browser.
+    console.warn('Refusing ?mock_scenario=: not a valid test scenario name (letters, numbers, _ and -, up to 64)');
+    throw OnboardingException.badRequest(
+      '?mock_scenario= is not a valid test scenario name: use letters, numbers, _ and -, up to 64 characters.'
+    );
+  }
+  return named;
 }
 
 /** Connect plus read, per call. Without it a stalled Go call holds the session lock indefinitely. */
 const TIMEOUT_MS = 15_000;
 
-function post(path: string, body: unknown, token: string): Promise<Response> {
+function post(path: string, body: unknown, token: string, extraHeaders: Record<string, string> = {}): Promise<Response> {
   return fetch(`${resolveGoBaseUrl()}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...extraHeaders },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -143,13 +181,13 @@ function post(path: string, body: unknown, token: string): Promise<Response> {
  * would otherwise stay cached and fail every call until it lapsed. A second
  * rejection is returned for `call` to classify.
  */
-async function authedFetch(path: string, body: unknown): Promise<Response> {
+async function authedFetch(path: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<Response> {
   const token = await getAccessToken();
-  const response = await post(path, body, token);
+  const response = await post(path, body, token, extraHeaders);
   if (response.status !== 401 && response.status !== 403) return response;
   console.warn(`GBG Go rejected the access token (${response.status}); minting a new one and retrying once`);
   invalidate(token);
-  return post(path, body, await getAccessToken());
+  return post(path, body, await getAccessToken(), extraHeaders);
 }
 
 /** Every `errors[].problem` in a Go error body, joined with "; " — empty if it isn't that shape. */
@@ -178,14 +216,19 @@ export function rejectedFields(problems: string, fieldsByGoPath: Record<string, 
   return fields;
 }
 
+/** A caller's own reading of a status Go refused with; undefined leaves it to `call`'s defaults. */
+type Refusal = (status: number, problems: string) => OnboardingException | undefined;
+
 /**
  * @param fieldsByGoPath for a submit, where each submitted field landed in
  *   the request (see `fieldsByGoPath` in buildSubmitRequest), so a 400/422
  *   can name the fields Go rejected.
+ * @param refusal consulted first once Go has refused the call, after the token retry.
  */
 async function call<T>(
   request: () => Promise<Response>,
-  fieldsByGoPath: Record<string, string> = {}
+  fieldsByGoPath: Record<string, string> = {},
+  refusal: Refusal = () => undefined
 ): Promise<T | undefined> {
   let response: Response;
   let text: string;
@@ -209,6 +252,8 @@ async function call<T>(
   const problems = goProblems(text);
   console.warn(`GBG Go call failed: ${response.status} ${problems || text}`);
 
+  const classified = refusal(response.status, problems || text);
+  if (classified) throw classified;
   if (response.status === 404 || response.status === 410) {
     throw OnboardingException.sessionExpired('Your session has ended. Start again to continue.');
   }
@@ -223,6 +268,45 @@ async function call<T>(
     throw OnboardingException.rateLimited('Too many attempts. Wait a moment and try again.');
   }
   throw OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
+}
+
+/** A `path: message` segment naming something the start request's context carried, i.e. the prefill. */
+const CONTEXT_PROBLEM = /(^|;\s*)context\.[^:;]*: /;
+
+/**
+ * How a refused journey/start reaches the customer. There is no session yet,
+ * so `call`'s defaults mislead here: a 404 would say "Your session has
+ * ended", and on a test scenario a 400 or 422 would show as a field error on
+ * a screen the customer hasn't filled in. We don't know which of the three Go
+ * uses for a scenario it can't run, so all three are covered — except a
+ * 400/422 naming a `context.` path, which is Go rejecting the prefill and
+ * stays a field error.
+ */
+function startRefusal(scenario: string | undefined): Refusal {
+  return (status, problems) => {
+    if (scenario && status === 403) {
+      console.warn(
+        `GBG Go answered journey/start on test scenario '${scenario}' with 403, even with a fresh token. ` +
+          'Test scenarios may not be enabled for this organisation.'
+      );
+      return undefined;
+    }
+    if (status === 404 && !scenario) {
+      console.error("GBG Go answered journey/start with 404. Check this market's resourceId names a published journey.");
+      return OnboardingException.upstreamUnavailable('Could not start your verification. Try again shortly.');
+    }
+    const scenarioRefused =
+      scenario !== undefined && (status === 400 || status === 422) && !CONTEXT_PROBLEM.test(problems);
+    if (status === 404 || scenarioRefused) {
+      console.error(
+        `GBG Go refused journey/start on test scenario '${scenario}' (${status}): ${problems}. Check the scenario ` +
+          "is saved on this journey (Journey builder → Test Scenarios) and its outcome names match the journey's " +
+          "exactly. A 404 can also mean the journey itself doesn't exist: check this market's resourceId."
+      );
+      return OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+    }
+    return undefined;
+  };
 }
 
 function statusFrom(interaction: Interaction): JourneyStatus {
@@ -314,14 +398,54 @@ async function fetchGoState(instanceId: string): Promise<GoStateResponse> {
 }
 
 export const goApiClient: GoClient = {
-  async startJourney(resourceId, prefill, _scenarioHint): Promise<GoStartResult> {
+  /**
+   * In test-scenarios mode the start request carries the x-gbg-scenario
+   * header, and only the start request: Go ties the scenario to the
+   * instance, so the fetches and submits after it are unchanged.
+   */
+  async startJourney(resourceId, prefill, scenarioHint): Promise<GoStartResult> {
+    const scenario = scenarioFor(scenarioHint);
     const request: GoStartRequest = {
       resourceId,
       context: { config: { delivery: 'api' }, subject: prefill ?? {} },
     };
-    const started = await call<GoStartResponse>(() => authedFetch('journey/start', request));
+    const headers: Record<string, string> = scenario ? { [SCENARIO_HEADER]: scenario } : {};
+    const started = await call<GoStartResponse>(
+      () => authedFetch('journey/start', request, headers),
+      {},
+      startRefusal(scenario)
+    );
     if (!started?.instanceId) {
       throw OnboardingException.upstreamUnavailable('Could not start your verification. Try again shortly.');
+    }
+    if (scenario) {
+      // Asked for a test run but Go did not confirm one. Only Go's reply to
+      // journey/start can say whether the scenario took, so by now the
+      // instance exists, with whatever prefill the start carried. What
+      // stopping here prevents is everything after: no fetch, no submit, so
+      // the customer's details and captures never reach a journey that would
+      // check them for real. The instance ID is logged so it can be found in
+      // GBG Go.
+      if (!isTestRun(started)) {
+        console.error(
+          `Asked GBG Go for test scenario '${scenario}' but instance ${started.instanceId} did not start as a ` +
+            `test run (test: ${started.test}). Abandoning it before any interaction, so no details reach it.`
+        );
+        throw OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+      }
+      // A run on some other scenario is the silent swap scenarioFor refuses
+      // to make: its outcomes would be read as this scenario's.
+      if (started.scenario !== undefined && started.scenario !== scenario) {
+        console.error(
+          `Asked GBG Go for test scenario '${scenario}' but instance ${started.instanceId} started on scenario ` +
+            `'${started.scenario}'. Abandoning it before any interaction.`
+        );
+        throw OnboardingException.upstreamUnavailable('This test journey could not start on its test scenario.');
+      }
+      rememberBounded(testScenarioByInstance, started.instanceId, scenario);
+      console.info(
+        `Started test run ${started.instanceId} on scenario '${scenario}': modules return the scenario's outcomes, no live checks`
+      );
     }
     const first = await fetchInteraction(started.instanceId);
     return { instanceId: started.instanceId, status: first.status, interaction: first.interaction };
@@ -393,7 +517,16 @@ export const goApiClient: GoClient = {
     return { status, decision: asRecord.decision, moduleRuns: asRecord.moduleRuns };
   },
 
+  /**
+   * A test run's record says so, with the scenario that produced it, so a
+   * scenario's outcome is never mistaken for a real verification. A summary
+   * row, so neither the response shape nor the front end changes.
+   */
   async fetchRecord(instanceId): Promise<RecordResponse> {
-    return defaultInteractionMapper.toRecord(await fetchGoState(instanceId));
+    const record = defaultInteractionMapper.toRecord(await fetchGoState(instanceId));
+    const scenario = testScenarioByInstance.get(instanceId);
+    if (scenario === undefined && !isTestInstance(instanceId)) return record;
+    const row = { k: 'Test run', v: scenario === undefined ? 'Yes' : `Yes, scenario ${scenario}` };
+    return { ...record, summary: [row, ...(record.summary ?? [])] };
   },
 };

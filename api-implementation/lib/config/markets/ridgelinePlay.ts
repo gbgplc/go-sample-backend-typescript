@@ -34,6 +34,11 @@ export const ridgelinePlay: MarketConfig = {
     baseUrl: 'https://eu.platform.go.gbgplc.com/v2/captain/',
     grantType: 'client_credentials',
     scope: 'gbg.token',
+    // GO_MODE=test-scenarios only: the GBG Go test scenario a journey starts
+    // on unless the front end names another with ?mock_scenario=. A suggested
+    // name: save a scenario with it on this journey (Journey builder → Test
+    // Scenarios), or change this to match yours.
+    testScenario: 'ridgeline-play-pass',
   },
   // Live-mode screens for this journey (defaultInteractionMapper): which
   // domain elements map to which screen, in collection order.

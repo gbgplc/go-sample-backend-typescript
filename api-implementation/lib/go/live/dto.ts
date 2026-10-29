@@ -20,6 +20,24 @@ export interface GoStartResponse {
   instanceId?: string;
   status?: string;
   message?: string;
+  /** True when the journey runs on a test scenario: its modules return the scenario's outcomes, not live checks. Absent on a live run. */
+  test?: boolean;
+  /** The test scenario the journey runs on; absent on a live run. */
+  scenario?: string;
+}
+
+/** The `test_` prefix Go gives a test run's instance ID. */
+export function isTestInstance(instanceId: string | undefined): boolean {
+  return instanceId?.startsWith('test_') ?? false;
+}
+
+/**
+ * A test run, by Go's own flag when it sent one — `"test": false` means not
+ * a test run, whatever the instance ID looks like — and by the `test_`
+ * instance-ID prefix only when it didn't.
+ */
+export function isTestRun(started: GoStartResponse): boolean {
+  return typeof started.test === 'boolean' ? started.test : isTestInstance(started.instanceId);
 }
 
 /** The {instanceId} body shared by /journey/interaction/fetch and /journey/state/fetch. */

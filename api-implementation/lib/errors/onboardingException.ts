@@ -7,6 +7,7 @@ const ERROR_CODE_TABLE: Record<ErrorCode, { httpStatus: number; defaultRetryable
   INTERACTION_STALE: { httpStatus: 409, defaultRetryable: true },
   UPSTREAM_UNAVAILABLE: { httpStatus: 503, defaultRetryable: true },
   RATE_LIMITED: { httpStatus: 429, defaultRetryable: true },
+  BAD_REQUEST: { httpStatus: 400, defaultRetryable: false },
 };
 
 /** Carries an ErrorCode straight through to the HTTP response as the contract's error envelope. */
@@ -46,5 +47,9 @@ export class OnboardingException extends Error {
 
   static rateLimited(message: string): OnboardingException {
     return new OnboardingException('RATE_LIMITED', message);
+  }
+
+  static badRequest(message: string): OnboardingException {
+    return new OnboardingException('BAD_REQUEST', message);
   }
 }
