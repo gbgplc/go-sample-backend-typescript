@@ -100,10 +100,33 @@ const PLACEHOLDERS: Record<string, string> = {
  * LazySide2CollectionRequired deliberately does not count: it is the
  * pre-decision state, present from the very first fetch, and treating it as a
  * request would show the back-of-document screen before the front was taken.
+ *
+ * Once the back has been submitted the instruction alone no longer counts.
+ * The first fetch after that submit still says Side2Required while
+ * `outstanding` has already dropped side2Image; the next says Side2Done (live
+ * tenant, 2026-11-02, Meridian). Counting that stale instruction showed the
+ * back-of-document screen a second time, and the capture taken on it was then
+ * routed as the selfie, because by the submit Go said Side2Done. If Go wants
+ * the back again it names side2Image in `outstanding`, which still counts.
+ * Mirrors go-sample-backend-java's DefaultInteractionMapper.side2Required.
  */
-function side2Required(outstanding: string[] | undefined, instructions: string[] | undefined): boolean {
+export function side2Required(
+  outstanding: string[] | undefined,
+  instructions: string[] | undefined,
+  backSubmitted: boolean
+): boolean {
   if (outstanding?.includes('PrimaryDocument/side2Image')) return true;
-  return instructions?.some((i) => i.toLowerCase() === 'side2required') ?? false;
+  return !backSubmitted && (instructions?.some((i) => i.toLowerCase() === 'side2required') ?? false);
+}
+
+/**
+ * The entry goApiClient adds to an instance's completed stages once the back
+ * of the document is submitted. The back shares the document stage, so it has
+ * no stage name of its own; no screen-plan stage can have this name, so the
+ * stage logic ignores it.
+ */
+export function secondSideMarker(documentStage: ScreenPlanStage): string {
+  return `${documentStage.name}#back-submitted`;
 }
 
 /**
@@ -432,6 +455,8 @@ export interface InteractionMapper {
   stageFor(submittedKeys: string[], completed: Set<string>): string | undefined;
   /** Whether the capture being submitted is the document one; undefined when no stage is current. */
   currentCaptureIsDocument(outstanding: string[], completed: Set<string>): boolean | undefined;
+  /** secondSideMarker for this plan's document stage; undefined if it has none. */
+  secondSideMarker(): string | undefined;
 }
 
 export function createInteractionMapper(screenPlan: ScreenPlanConfig): InteractionMapper {
@@ -588,7 +613,7 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // image, leaving Facematch with no selfie to compare.
     const documentStage = screenPlan.stages.find((s) => claimsRef(s, 'PrimaryDocument/side1Image'));
     if (documentStage && completed.has(documentStage.name)) {
-      if (side2Required(response.outstanding, response.instructions)) {
+      if (side2Required(response.outstanding, response.instructions, completed.has(secondSideMarker(documentStage)))) {
         return toStagedInteraction(interactionId, asSecondSide(documentStage), outstanding, requiredRefs);
       }
       // Classification has not answered yet. Waiting is the only correct move
@@ -787,7 +812,12 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     return stage.captureType === 'document' || stage.prefix.startsWith('PrimaryDocument');
   }
 
-  return { toInteraction, toRecord, stageFor, currentCaptureIsDocument };
+  function documentSecondSideMarker(): string | undefined {
+    const documentStage = screenPlan.stages.find((s) => claimsRef(s, 'PrimaryDocument/side1Image'));
+    return documentStage ? secondSideMarker(documentStage) : undefined;
+  }
+
+  return { toInteraction, toRecord, stageFor, currentCaptureIsDocument, secondSideMarker: documentSecondSideMarker };
 }
 
 export const defaultInteractionMapper: InteractionMapper = createInteractionMapper(marketConfig.screenPlan);

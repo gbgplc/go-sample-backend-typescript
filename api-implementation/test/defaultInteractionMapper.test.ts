@@ -399,3 +399,44 @@ describe('toRecord — journey name, reference, timestamps, total time, per-modu
     expect(mapper.toRecord(stateResponseWith(notYetRun)).summary.some((row) => row.k === 'Document')).toBe(false);
   });
 });
+
+describe('toInteraction: the back of the document', () => {
+  const mapper = createInteractionMapper(TWO_STAGE_PLAN);
+  const withInstructions = (outstanding: string[], instructions: string[]): GoInteractionFetchResponse => ({
+    ...fetchResponseWithOutstanding(outstanding),
+    instructions,
+  });
+
+  it('opens the back screen once Go asks for it', () => {
+    const interaction = mapper.toInteraction(
+      withInstructions(['Selfie/selfieImage', 'PrimaryDocument/side2Image'], ['Side2Required']),
+      new Set(['document'])
+    );
+
+    expect(interaction.captureType).toBe('document-back');
+  });
+
+  /**
+   * The first fetch after the back is submitted, as Go returned it on the live
+   * tenant (2026-11-02, Meridian): side2Image already gone from outstanding,
+   * the instruction not yet updated.
+   */
+  it('moves on to the selfie when Side2Required is stale after the back is submitted', () => {
+    const interaction = mapper.toInteraction(
+      withInstructions(['Selfie/selfieImage'], ['Side2Required']),
+      new Set(['document', 'document#back-submitted'])
+    );
+
+    expect(interaction.stage).toBe('Biometrics');
+    expect(mapper.secondSideMarker()).toBe('document#back-submitted');
+  });
+
+  it('still reopens the back screen when Go asks for the back again', () => {
+    const interaction = mapper.toInteraction(
+      withInstructions(['Selfie/selfieImage', 'PrimaryDocument/side2Image'], ['Side2Required']),
+      new Set(['document', 'document#back-submitted'])
+    );
+
+    expect(interaction.captureType).toBe('document-back');
+  });
+});
