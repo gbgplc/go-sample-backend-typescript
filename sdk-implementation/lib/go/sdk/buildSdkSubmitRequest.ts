@@ -54,6 +54,7 @@ type Target =
   | { kind: 'email'; type: 'personal' | 'work' }
   | { kind: 'idNumber'; type: 'NationalInsuranceNumber' | 'SSN' }
   | { kind: 'previousAddress' }
+  | { kind: 'previousAddressPart'; component: AddressComponent }
   | { kind: 'documentSide1' }
   | { kind: 'documentSide2' }
   | { kind: 'selfie' };
@@ -112,13 +113,21 @@ const KNOWN: Record<string, FieldMapping> = {
  * (`PreviousAddresses/postalCode` and `CurrentAddress/postalCode`), and
  * matching on the leaf alone would write a previous address's postcode over
  * the current one.
+ *
+ * A previous-address component goes into the first previousAddresses[]
+ * entry instead, with every other component of the same address. Without
+ * this it matched nothing and was dropped.
  */
 function forKey(key: string): FieldMapping | undefined {
   const known = KNOWN[key];
   if (known) return known;
   if (!key.includes('/')) return undefined;
+  const element = key.slice(0, key.indexOf('/'));
   const byLeaf = KNOWN[key.slice(key.lastIndexOf('/') + 1)];
-  return byLeaf && byLeaf.domainElementId === key.slice(0, key.indexOf('/')) ? byLeaf : undefined;
+  if (element === 'PreviousAddresses' && byLeaf?.target.kind === 'address') {
+    return { domainElementId: element, target: { kind: 'previousAddressPart', component: byLeaf.target.component } };
+  }
+  return byLeaf && byLeaf.domainElementId === element ? byLeaf : undefined;
 }
 
 /**
@@ -209,6 +218,12 @@ function place(acc: Accumulator, target: Target, text: string): string {
     case 'previousAddress':
       (identity.previousAddresses ??= []).push({ addressString: text });
       return `${ID}previousAddresses.${identity.previousAddresses.length - 1}.addressString`;
+    case 'previousAddressPart': {
+      const previous = (identity.previousAddresses ??= []);
+      const entry = previous[0] ?? (previous[0] = {});
+      entry[target.component] = target.component === 'country' ? countryCode(text) : text;
+      return `${ID}previousAddresses.0.${target.component}`;
+    }
     // Both sides of one document belong to a single documents[] entry, and
     // `type` is required by the SDK. An absent side is omitted, never sent
     // empty — Go rejects a supplied empty image.

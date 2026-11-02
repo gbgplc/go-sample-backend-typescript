@@ -6,11 +6,12 @@ import { GoInteractionView, GoResult, GoStateView } from './goViews';
  * Narrows `@gbg/go-core` responses into the `goViews` read model.
  *
  * interaction/fetch and state/fetch both return a TS union of a full and a
- * slim variant, picked by the SDK's own best-match heuristic rather than by
- * the `view` we asked for. Neither field set is a superset the other can be
- * told apart by — a full response without `context` looks like a slim one —
- * so the fields both variants share are read structurally instead of
- * branching on which variant arrived.
+ * slim variant. Since 0.2.0-alpha.1 the SDK picks the variant by the
+ * response's `view` property (alpha.0 guessed by best field match), and adds
+ * a third member, `Unknown`, for a body with no or an unrecognised `view` —
+ * or one whose `view` is known but whose fields fail that variant's schema.
+ * `Unknown` wraps the body in `raw`, so it is unwrapped first; the fields
+ * both variants share are then read structurally, whichever arrived.
  */
 
 function stringList(value: unknown): string[] | undefined {
@@ -24,8 +25,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Whether the SDK returned its `Unknown` member: Go's body is then in `raw`. */
+export function arrivedAsUnknown(response: unknown): boolean {
+  return record(response)?.isUnknown === true;
+}
+
+/** The response's fields, from `raw` when the SDK returned its `Unknown` member. */
+function bodyOf(response: unknown): Record<string, unknown> {
+  const value = record(response) ?? {};
+  return arrivedAsUnknown(value) ? (record(value.raw) ?? {}) : value;
+}
+
 export function toInteractionView(response: FetchInteractionResponse): GoInteractionView {
-  const body = response as unknown as Record<string, unknown>;
+  const body = bodyOf(response);
   const journey = record(body.journey);
   return {
     instanceId: typeof body.instanceId === 'string' ? body.instanceId : undefined,
@@ -49,14 +61,16 @@ export function toInteractionView(response: FetchInteractionResponse): GoInterac
  * as still running. Callers treat undefined as "could not read the state".
  */
 export function toStateView(response: GetJourneyStateResponse): GoStateView | undefined {
-  // Both variants have instanceId/status/result. Only slim has top-level
-  // `steps`/`journey`; only full has `context`.
-  const body = response as unknown as Record<string, unknown>;
-  const looksSlim = body.context === undefined && (body.steps !== undefined || body.journey !== undefined);
+  // Go names the view it sent. Without one (the Unknown member), fall back
+  // to shape: only slim has top-level `steps`/`journey`; only full has
+  // `context`.
+  const body = bodyOf(response);
+  const looksSlim =
+    body.view === 'slim' || (body.context === undefined && (body.steps !== undefined || body.journey !== undefined));
   if (looksSlim) return undefined;
   return {
-    instanceId: response.instanceId,
-    status: response.status,
+    instanceId: typeof body.instanceId === 'string' ? body.instanceId : undefined,
+    status: typeof body.status === 'string' ? body.status : undefined,
     result: record(body.result) as GoResult | undefined,
     context: record(body.context) as GoStateView['context'],
   };

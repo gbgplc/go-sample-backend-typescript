@@ -13,8 +13,8 @@ import { GoClient, GoStartResult } from '../goClient';
 import { buildSdkSubmitRequest, START_SUBJECT_KEYS } from './buildSdkSubmitRequest';
 import { getAccessToken, invalidate } from './goSdkAuthService';
 import { collectsOf, GoInteractionView, GoStateView } from './goViews';
-import { isFailed, resultFailed, defaultInteractionMapper as mapper } from './sdkInteractionMapper';
-import { startedInstanceId, toInteractionView, toStateView } from './sdkResponses';
+import { isFailed, resultFailed, side2Required, defaultInteractionMapper as mapper } from './sdkInteractionMapper';
+import { arrivedAsUnknown, startedInstanceId, toInteractionView, toStateView } from './sdkResponses';
 
 /**
  * Real GBG Go v2 integration built on `@gbg/go-core` — the SDK sibling of
@@ -225,7 +225,22 @@ async function fetchView(instanceId: string): Promise<GoInteractionView> {
   const response = await call(() =>
     authorized((token) => goFor(token).interactions.fetch(interactionSecurity(token), { body: { instanceId } }))
   );
+  warnIfUnknown(response, 'fetch-interaction', instanceId);
   return toInteractionView(response);
+}
+
+/**
+ * The API reference marks `view` as required on both fetch responses, so the
+ * SDK's Unknown member means Go's reply no longer matches it, or failed the
+ * SDK's schema. Still read (sdkResponses unwraps it), but worth knowing.
+ */
+function warnIfUnknown(response: unknown, operation: string, instanceId: string): void {
+  if (arrivedAsUnknown(response)) {
+    console.warn(
+      `GBG Go ${operation} response for instance ${instanceId} has no recognised \`view\` or failed the SDK's schema; ` +
+        'read from its raw body'
+    );
+  }
 }
 
 async function fetchInteraction(instanceId: string): Promise<SubmitInteractionResponse> {
@@ -257,9 +272,12 @@ async function resolveAttachment(
     await fetchInteraction(instanceId);
   }
   const outstanding = lastOutstandingByInstance.get(instanceId) ?? [];
-  const instructions = lastInstructionsByInstance.get(instanceId) ?? [];
 
-  if (instructions.some((i) => i.toLowerCase() === 'side2required') || outstanding.includes('PrimaryDocument/side2Image')) {
+  // The same rule that chose the screen, so a back-of-document screen and the
+  // capture taken on it can't disagree.
+  const marker = mapper.secondSideMarker();
+  const backSubmitted = marker !== undefined && completedStages(instanceId).has(marker);
+  if (side2Required(outstanding, lastInstructionsByInstance.get(instanceId), backSubmitted)) {
     const back = { ...data };
     delete back['attachmentRef'];
     back['documentBack'] = ref;
@@ -281,6 +299,7 @@ async function resolveAttachment(
 
 async function fetchGoState(instanceId: string): Promise<GoStateView> {
   const response = await call(() => authorized((token) => goFor(token).journeys.getState({ body: { instanceId } })));
+  warnIfUnknown(response, 'journey-state', instanceId);
   const view = toStateView(response);
   if (!view) {
     console.warn(
@@ -363,6 +382,10 @@ export const goSdkClient: GoClient = {
       fieldsByGoPath
     );
     if (submittedStage) recordStage(instanceId, submittedStage);
+    // The back shares the document stage, so it is recorded separately: Go's
+    // next fetch can still say Side2Required (see side2Required).
+    const marker = mapper.secondSideMarker();
+    if (marker && payload && 'documentBack' in payload) recordStage(instanceId, marker);
     return fetchInteraction(instanceId);
   },
 
