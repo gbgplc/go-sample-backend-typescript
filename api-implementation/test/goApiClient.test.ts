@@ -145,6 +145,48 @@ describe('goApiClient', () => {
     expect(subject.biometrics).toBeUndefined();
   });
 
+  /**
+   * The sequence Go returned on the live tenant (2026-11-02, Meridian): the
+   * first fetch after the back is submitted still says Side2Required, with
+   * side2Image already gone from outstanding. That reopened the back screen,
+   * and the capture taken on it went to Go as the selfie.
+   */
+  it('moves on to the selfie after the back, despite a stale Side2Required', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }];
+    const fetches = [
+      { outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'], instructions: ['LazySide2CollectionRequired'] },
+      { outstanding: ['Selfie/selfieImage', 'PrimaryDocument/side2Image'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+    ];
+    let fetchCount = 0;
+    const submitted: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(input).pathname;
+      if (path === FETCH_PATH) {
+        const step = fetches[Math.min(fetchCount++, fetches.length - 1)];
+        return json(200, { ...INTERACTION, interaction: { collects }, ...step });
+      }
+      if (path === SUBMIT_PATH) {
+        submitted.push((JSON.parse(String(init?.body)) as { context: { subject: Record<string, unknown> } }).context.subject);
+        return json(200, { status: 'success' });
+      }
+      return routes[path]!({ url: input, authorization: null, hasSignal: true });
+    });
+    const goClient = await client();
+
+    expect((await goClient.fetchInteraction('inst-1')).interaction.stage).toBe('Document');
+    const afterFront = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    expect(afterFront.interaction.captureType).toBe('document-back');
+    const afterBack = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjaw==' });
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'c2VsZmll' });
+
+    expect(afterBack.interaction.stage).toBe('Biometrics');
+    expect(submitted[1]!.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjaw==' }]);
+    expect(submitted[2]!.biometrics).toEqual([{ type: 'Selfie', selfieImage: 'c2VsZmll' }]);
+    expect(submitted[2]!.documents).toBeUndefined();
+  });
+
   it('treats a failed result.status as terminal, and a null classification as no decision', async () => {
     const STATE_PATH = '/v2/captain/journey/state/fetch';
     const steps = { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } };
