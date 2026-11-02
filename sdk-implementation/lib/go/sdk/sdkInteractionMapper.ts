@@ -105,10 +105,33 @@ const PLACEHOLDERS: Record<string, string> = {
  * LazySide2CollectionRequired deliberately does not count: it is the
  * pre-decision state, present from the very first fetch, and treating it as a
  * request would show the back-of-document screen before the front was taken.
+ *
+ * Once the back has been submitted the instruction alone no longer counts.
+ * The first fetch after that submit still says Side2Required while
+ * `outstanding` has already dropped side2Image; the next says Side2Done (live
+ * tenant, 2026-11-02, Meridian). Counting that stale instruction showed the
+ * back-of-document screen a second time, and the capture taken on it was then
+ * routed as the selfie, because by the submit Go said Side2Done. If Go wants
+ * the back again it names side2Image in `outstanding`, which still counts.
+ * Same rule as api-implementation's defaultInteractionMapper.
  */
-function side2Required(outstanding: string[] | undefined, instructions: string[] | undefined): boolean {
+export function side2Required(
+  outstanding: string[] | undefined,
+  instructions: string[] | undefined,
+  backSubmitted: boolean
+): boolean {
   if (outstanding?.includes('PrimaryDocument/side2Image')) return true;
-  return instructions?.some((i) => i.toLowerCase() === 'side2required') ?? false;
+  return !backSubmitted && (instructions?.some((i) => i.toLowerCase() === 'side2required') ?? false);
+}
+
+/**
+ * The entry goSdkClient adds to an instance's completed stages once the back
+ * of the document is submitted. The back shares the document stage, so it has
+ * no stage name of its own; no screen-plan stage can have this name, so the
+ * stage logic ignores it.
+ */
+export function secondSideMarker(documentStage: ScreenPlanStage): string {
+  return `${documentStage.name}#back-submitted`;
 }
 
 /**
@@ -177,11 +200,12 @@ export function isFailed(goStatus: string | undefined): boolean {
  * evaluation and then fail before finishing (a module's terminal error, or
  * the platform abandoning it on a deadlock or timeout), leaving a positive
  * classification beside `status: "error"` — and that is not a pass. Go
- * reports an elapsed deadline as `error` today; `timeout` is accepted too.
+ * reports an elapsed deadline as `error` today; `timeout` is accepted too. A
+ * deadlocked journey reports `abandoned` (gbggo4-demo, 2026-10-29).
  */
 export function resultFailed(result: { status?: string } | undefined): boolean {
   const status = result?.status?.toLowerCase();
-  return status === 'error' || status === 'timeout';
+  return status === 'error' || status === 'timeout' || status === 'abandoned';
 }
 
 function mapStatus(goStatus: string | undefined, processing: boolean | undefined): JourneyStatus {
@@ -436,6 +460,8 @@ export interface InteractionMapper {
   stageFor(submittedKeys: string[], completed: Set<string>): string | undefined;
   /** Whether the capture being submitted is the document one; undefined when no stage is current. */
   currentCaptureIsDocument(outstanding: string[], completed: Set<string>): boolean | undefined;
+  /** secondSideMarker for this plan's document stage; undefined if it has none. */
+  secondSideMarker(): string | undefined;
 }
 
 export function createInteractionMapper(screenPlan: ScreenPlanConfig): InteractionMapper {
@@ -480,7 +506,12 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // arrive. JourneyStatus has no Failed member, so this surfaces as what
     // that contract can represent: a terminal result screen carrying a fail
     // decision.
-    if (isFailed(goStatus)) {
+    //
+    // A failed result.status reads the same whatever the journey status
+    // beside it, as in toRecord: otherwise a Completed journey whose result
+    // is error or abandoned shows "Verification complete" here while its
+    // record says the checks could not run.
+    if (isFailed(goStatus) || resultFailed(response.result)) {
       return {
         interactionId,
         kind: 'result',
@@ -587,7 +618,7 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // image, leaving Facematch with no selfie to compare.
     const documentStage = screenPlan.stages.find((s) => claimsRef(s, 'PrimaryDocument/side1Image'));
     if (documentStage && completed.has(documentStage.name)) {
-      if (side2Required(response.outstanding, response.instructions)) {
+      if (side2Required(response.outstanding, response.instructions, completed.has(secondSideMarker(documentStage)))) {
         return toStagedInteraction(interactionId, asSecondSide(documentStage), outstanding, requiredRefs);
       }
       // Classification has not answered yet. Waiting is the only correct move
@@ -786,7 +817,12 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     return stage.captureType === 'document' || stage.prefix.startsWith('PrimaryDocument');
   }
 
-  return { toInteraction, toRecord, stageFor, currentCaptureIsDocument };
+  function documentSecondSideMarker(): string | undefined {
+    const documentStage = screenPlan.stages.find((s) => claimsRef(s, 'PrimaryDocument/side1Image'));
+    return documentStage ? secondSideMarker(documentStage) : undefined;
+  }
+
+  return { toInteraction, toRecord, stageFor, currentCaptureIsDocument, secondSideMarker: documentSecondSideMarker };
 }
 
 export const defaultInteractionMapper: InteractionMapper = createInteractionMapper(marketConfig.screenPlan);

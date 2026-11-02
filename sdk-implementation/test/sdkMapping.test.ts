@@ -2,24 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { sdkServerUrl } from '@/lib/config';
 import { buildSdkSubmitRequest } from '@/lib/go/sdk/buildSdkSubmitRequest';
 import { authUrlProblem } from '@/lib/go/sdk/goSdkAuthService';
-import { toInteractionView, toStateView } from '@/lib/go/sdk/sdkResponses';
+import { arrivedAsUnknown, toInteractionView, toStateView } from '@/lib/go/sdk/sdkResponses';
 import type { FetchInteractionResponse, GetJourneyStateResponse } from '@gbg/go-core/models/operations';
 
 const CONSENT_URL = 'https://example.com/terms';
 const TERMS = 'I agree.';
 
-describe('sdkServerUrl — @gbg/go-core adds /v2/captain to every path itself', () => {
-  it('strips the API path from the configured base URL, whatever its case', () => {
-    expect(sdkServerUrl('https://eu.platform.go.gbgplc.com/v2/captain/')).toBe('https://eu.platform.go.gbgplc.com');
-    expect(sdkServerUrl('https://eu.platform.go.gbgplc.com/V2/Captain')).toBe('https://eu.platform.go.gbgplc.com');
+describe('sdkServerUrl — since 0.2.0-alpha.1 @gbg/go-core paths start at /journey/...', () => {
+  it('keeps the API path and drops the trailing slash', () => {
+    expect(sdkServerUrl('https://eu.platform.go.gbgplc.com/v2/captain/')).toBe('https://eu.platform.go.gbgplc.com/v2/captain');
+    expect(sdkServerUrl('https://gw.example.com/go/v2/captain')).toBe('https://gw.example.com/go/v2/captain');
   });
 
-  it('keeps any other path prefix for the SDK to append to', () => {
-    expect(sdkServerUrl('https://gw.example.com/go/v2/captain/')).toBe('https://gw.example.com/go');
-  });
-
-  it('reduces the configured market base URL to the bare host', () => {
-    expect(sdkServerUrl()).toBe('https://eu.platform.go.gbgplc.com');
+  it("gives the configured market base URL in the SDK's own server-list form", () => {
+    expect(sdkServerUrl()).toBe('https://eu.platform.go.gbgplc.com/v2/captain');
   });
 });
 
@@ -108,8 +104,21 @@ describe('buildSdkSubmitRequest', () => {
       TERMS
     );
 
-    expect(request.participants).toEqual([{ domainElementId: 'CurrentAddress' }]);
+    expect(request.participants).toEqual([{ domainElementId: 'PreviousAddresses' }, { domainElementId: 'CurrentAddress' }]);
     expect(request.context?.subject.identity?.currentAddress).toEqual({ postalCode: 'SW1A 2AA' });
+    expect(request.context?.subject.identity?.previousAddresses).toEqual([{ postalCode: 'OX1 1AA' }]);
+  });
+
+  it("places a previous address's components together in its own entry", () => {
+    const data = { 'PreviousAddresses/building': '1', 'PreviousAddresses/postalCode': 'OX1 1AA', 'PreviousAddresses/country': 'United Kingdom' };
+
+    const { request, fieldsByGoPath } = buildSdkSubmitRequest('inst-1', 'int-1', data, CONSENT_URL, TERMS);
+
+    expect(request.context?.subject).toEqual({
+      identity: { previousAddresses: [{ building: '1', postalCode: 'OX1 1AA', country: 'GBR' }] },
+    });
+    expect(request.participants).toEqual([{ domainElementId: 'PreviousAddresses' }]);
+    expect(fieldsByGoPath['context.subject.identity.previousAddresses.0.postalCode']).toBe('PreviousAddresses/postalCode');
   });
 
   it('skips null and undefined values rather than sending the string "null"', () => {
@@ -163,8 +172,50 @@ describe('sdkResponses — narrowing the SDK unions into the read model', () => 
     });
   });
 
+  /** The SDK's Unknown member: no `view` on the body, which it then wraps in `raw`. */
+  it('reads a fetch the SDK could not place by view from its raw body', () => {
+    const unknown = {
+      view: 'UNKNOWN',
+      isUnknown: true,
+      raw: {
+        instanceId: 'inst-1',
+        interactionId: 'int-1',
+        journey: { status: 'InProgress' },
+        outstanding: ['Selfie/selfieImage'],
+        instructions: ['Side2Done'],
+      },
+    } as unknown as FetchInteractionResponse;
+
+    expect(arrivedAsUnknown(unknown)).toBe(true);
+    expect(toInteractionView(unknown)).toMatchObject({
+      instanceId: 'inst-1',
+      interactionId: 'int-1',
+      journey: { status: 'InProgress' },
+      outstanding: ['Selfie/selfieImage'],
+      instructions: ['Side2Done'],
+    });
+  });
+
+  it('reads a state the SDK could not place by view from its raw body', () => {
+    const unknown = {
+      view: 'UNKNOWN',
+      isUnknown: true,
+      raw: { instanceId: 'inst-1', status: 'Completed', context: { process: { steps: [{ name: 'Liveness Verification' }] } } },
+    } as unknown as GetJourneyStateResponse;
+
+    expect(toStateView(unknown)).toMatchObject({ instanceId: 'inst-1', status: 'Completed' });
+    expect(toStateView(unknown)?.context?.process?.steps).toEqual([{ name: 'Liveness Verification' }]);
+  });
+
+  it('refuses a state Go marks as the slim view', () => {
+    const slim = { view: 'slim', instanceId: 'inst-1', status: 'InProgress', steps: [] } as unknown as GetJourneyStateResponse;
+
+    expect(toStateView(slim)).toBeUndefined();
+  });
+
   it('takes the full state view, context and result intact', () => {
     const full = {
+      view: 'full',
       instanceId: 'inst-1',
       status: 'Completed',
       result: { outcomeClassification: 'positive' },

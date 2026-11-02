@@ -54,13 +54,17 @@ export function resolveGoBaseUrl(): string {
 }
 
 /**
- * The base URL without its `/v2/captain` API path, for the SDK's `serverURL`.
- * `@gbg/go-core` puts `/v2/captain` in every operation's own path, so passing
- * the full base URL would request `/v2/captain/v2/captain/...`. Any other
- * path (a gateway prefix, say) is kept, since the SDK appends to it.
+ * The base URL for the SDK's `serverURL`: the full API base, `/v2/captain`
+ * included, without the trailing slash (every operation path starts with one).
+ *
+ * `@gbg/go-core` 0.2.0-alpha.1 put `/v2/captain` back into its server URLs
+ * and took it out of the operation paths, reversing alpha.0. Under alpha.0
+ * this stripped it; under alpha.1 stripping it would send every call to
+ * `https://host/journey/...`. Mirrors go-sample-backend-java's
+ * GoSdkProperties.sdkServerUrl() on go-core-sdk 0.2.0-alpha02.
  */
 export function sdkServerUrl(baseUrl: string = resolveGoBaseUrl()): string {
-  return baseUrl.replace(/\/v2\/captain\/?$/i, '').replace(/\/$/, '');
+  return baseUrl.replace(/\/$/, '');
 }
 
 export { MARKETS };

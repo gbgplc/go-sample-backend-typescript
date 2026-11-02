@@ -66,4 +66,29 @@ describe('a module that could not run is not a decline', () => {
     expect(record.systemError).toBe(true);
     expect(record.title).toBe('We could not run your checks');
   });
+
+  /** A deadlocked journey, from gbggo4-demo (2026-10-29, sandbox_QPgHrNztUswy5tZySLOUfe). */
+  it('an abandoned result is a system error', () => {
+    const abandoned: GoStateView = {
+      instanceId: 'sandbox_QPgHrNztUswy5tZySLOUfe',
+      status: 'InProgress',
+      context: { process: { steps: [{ name: 'Document Classification', result: { status: 'complete' } }] } },
+      result: { status: 'abandoned' },
+    };
+    const record = mapper.toRecord(abandoned);
+    expect(record.decision).toBe('fail');
+    expect(record.systemError).toBe(true);
+    expect(record.title).toBe('We could not run your checks');
+  });
+
+  /** The interaction screen agrees with the record. */
+  it('a Completed journey with a failed result is not shown as verified', () => {
+    const interaction = mapper.toInteraction({
+      instanceId: 'i-4',
+      journey: { status: 'Completed' },
+      result: { status: 'error', outcomeClassification: 'positive', outcome: 'Decision: Accept' },
+    });
+    expect(interaction).toMatchObject({ kind: 'result', decision: 'fail' });
+    expect(interaction.title).not.toBe('Verification complete');
+  });
 });

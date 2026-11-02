@@ -30,7 +30,9 @@ const STATE_PATH = '/v2/captain/journey/state/fetch';
 
 let tokenCount = 0;
 
+/** Go names the view it sent; the SDK picks its union member by it since 0.2.0-alpha.1. */
 const INTERACTION = {
+  view: 'full',
   instanceId: 'inst-1',
   interactionId: 'grn:::gbg:design:interaction:segment1@latest',
   journey: { status: 'InProgress' },
@@ -87,7 +89,7 @@ async function client() {
 const calls = (path: string) => seen.filter((s) => new URL(s.url).pathname === path);
 
 describe('goSdkClient against the real SDK', () => {
-  it('sends every Go call to the host once, with /v2/captain from the SDK path and not doubled', async () => {
+  it('sends every Go call under /v2/captain once, not doubled or dropped', async () => {
     await (await client()).startJourney('journey@v1', undefined, null);
 
     const urls = seen.map((s) => s.url).filter((u) => !u.includes(TOKEN_PATH));
@@ -212,7 +214,7 @@ describe('goSdkClient against the real SDK', () => {
         rejected = true;
         return json(401, { errors: [{ code: '2001', name: 'UNAUTHORIZED', problem: 'Authentication required', action: '' }] });
       }
-      return json(200, { instanceId: 'inst-1', status: 'InProgress', context: { process: { steps: [] } } });
+      return json(200, { view: 'full', instanceId: 'inst-1', status: 'InProgress', context: { process: { steps: [] } } });
     };
 
     await (await client()).fetchState('inst-1');
@@ -258,6 +260,7 @@ describe('goSdkClient against the real SDK', () => {
   it('reads the decision and module runs from the full state view', async () => {
     routes[STATE_PATH] = () =>
       json(200, {
+        view: 'full',
         instanceId: 'inst-1',
         status: 'InProgress',
         result: { outcome: 'Decision: Manual review', outcomeClassification: 'neutral' },
@@ -281,6 +284,7 @@ describe('goSdkClient against the real SDK', () => {
   it('treats a failed result.status as a terminal fail, whatever the classification says', async () => {
     routes[STATE_PATH] = () =>
       json(200, {
+        view: 'full',
         instanceId: 'inst-1',
         status: 'InProgress',
         result: { status: 'error', outcomeClassification: 'positive' },
@@ -296,6 +300,7 @@ describe('goSdkClient against the real SDK', () => {
   it('does not count an explicit null classification as a decision', async () => {
     routes[STATE_PATH] = () =>
       json(200, {
+        view: 'full',
         instanceId: 'inst-1',
         status: 'InProgress',
         result: { outcomeClassification: null },
@@ -330,10 +335,55 @@ describe('goSdkClient against the real SDK', () => {
 
   it('refuses a slim state view, which has no step status or timing', async () => {
     routes[STATE_PATH] = () =>
-      json(200, { instanceId: 'inst-1', status: 'InProgress', steps: [{ nodeId: 'n1', name: 'Facematch Verification' }] });
+      json(200, { view: 'slim', instanceId: 'inst-1', status: 'InProgress', steps: [{ nodeId: 'n1', name: 'Facematch Verification' }] });
 
     const error = await (await client()).fetchState('inst-1').catch((e: unknown) => e);
 
     expect((error as OnboardingException).code).toBe('UPSTREAM_UNAVAILABLE');
+  });
+
+  /**
+   * The sequence Go returned on the live tenant (2026-11-02, Meridian): the
+   * first fetch after the back is submitted still says Side2Required, with
+   * side2Image already gone from outstanding. That reopened the back screen,
+   * and the capture taken on it went to Go as the selfie.
+   */
+  it('moves on to the selfie after the back, despite a stale Side2Required', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }];
+    const fetches = [
+      { outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'], instructions: ['LazySide2CollectionRequired'] },
+      { outstanding: ['Selfie/selfieImage', 'PrimaryDocument/side2Image'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+    ];
+    let fetchCount = 0;
+    routes[FETCH_PATH] = () =>
+      json(200, { ...INTERACTION, interaction: { collects }, ...fetches[Math.min(fetchCount++, fetches.length - 1)] });
+    const goClient = await client();
+
+    expect((await goClient.fetchInteraction('inst-1')).interaction.stage).toBe('Document');
+    const afterFront = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    expect(afterFront.interaction.captureType).toBe('document-back');
+    const afterBack = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjaw==' });
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'c2VsZmll' });
+
+    expect(afterBack.interaction.stage).toBe('Biometrics');
+    const subjects = calls(SUBMIT_PATH).map((c) => (c.body as { context: { subject: Record<string, unknown> } }).context.subject);
+    expect(subjects[1]!.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjaw==' }]);
+    expect(subjects[2]!.biometrics).toEqual([{ type: 'Selfie', selfieImage: 'c2VsZmll' }]);
+    expect(subjects[2]!.documents).toBeUndefined();
+  });
+
+  /** The SDK returns its Unknown member, with the body in `raw`, which is still read. */
+  it('still reads a fetch that carries no view, and says so', async () => {
+    const { view: _view, ...withoutView } = INTERACTION;
+    routes[FETCH_PATH] = () => json(200, withoutView);
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const screen = await (await client()).fetchInteraction('inst-1');
+
+    expect(screen.interaction.stage).toBe('Document');
+    expect(warned.mock.calls.flat().join(' ')).toContain('no recognised `view`');
+    warned.mockRestore();
   });
 });
