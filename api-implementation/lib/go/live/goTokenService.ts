@@ -39,6 +39,7 @@ async function mintToken(): Promise<string> {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
+      signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
     console.error('Failed to mint a Go access token', e);
@@ -73,4 +74,17 @@ export async function getAccessToken(): Promise<string> {
     });
   }
   return mintingPromise;
+}
+
+/**
+ * Drops `token` if it is still the cached one, so the next call mints afresh.
+ * Called when Go rejects a token (401/403) before its expiry — revoked,
+ * rotated early, or clock skew. A token another caller has already replaced
+ * is left alone.
+ */
+export function invalidate(token: string): void {
+  if (cachedToken === token) {
+    cachedToken = undefined;
+    cachedTokenExpiresAt = 0;
+  }
 }

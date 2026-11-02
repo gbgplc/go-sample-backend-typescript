@@ -20,6 +20,24 @@ export interface GoStartResponse {
   instanceId?: string;
   status?: string;
   message?: string;
+  /** True when the journey runs on a test scenario: its modules return the scenario's outcomes, not live checks. Absent on a live run. */
+  test?: boolean;
+  /** The test scenario the journey runs on; absent on a live run. */
+  scenario?: string;
+}
+
+/** Go gives a test run's instance ID a `sandbox_` prefix (gbggo4-demo, 2026-10-29); `test_` is accepted too. */
+export function isTestInstance(instanceId: string | undefined): boolean {
+  return !!instanceId && (instanceId.startsWith('sandbox_') || instanceId.startsWith('test_'));
+}
+
+/**
+ * A test run, by Go's own flag when it sent one — `"test": false` means not
+ * a test run, whatever the instance ID looks like — and by the instance-ID
+ * prefix only when it didn't.
+ */
+export function isTestRun(started: GoStartResponse): boolean {
+  return typeof started.test === 'boolean' ? started.test : isTestInstance(started.instanceId);
 }
 
 /** The {instanceId} body shared by /journey/interaction/fetch and /journey/state/fetch. */

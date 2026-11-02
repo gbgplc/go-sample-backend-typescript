@@ -166,6 +166,20 @@ export function isFailed(goStatus: string | undefined): boolean {
   return goStatus?.toLowerCase() === 'failed' || goStatus?.toLowerCase() === 'error';
 }
 
+/**
+ * Whether the journey's own `result.status` says it ended in failure. Go
+ * documents this as the authoritative success signal: a journey can pass an
+ * evaluation and then fail before finishing (a module's terminal error, or
+ * the platform abandoning it on a deadlock or timeout), leaving a positive
+ * classification beside `status: "error"` — and that is not a pass. Go
+ * reports an elapsed deadline as `error` today; `timeout` is accepted too. A
+ * deadlocked journey reports `abandoned` (gbggo4-demo, 2026-10-29).
+ */
+export function resultFailed(result: { status?: string } | undefined): boolean {
+  const status = result?.status?.toLowerCase();
+  return status === 'error' || status === 'timeout' || status === 'abandoned';
+}
+
 function mapStatus(goStatus: string | undefined, processing: boolean | undefined): JourneyStatus {
   if (goStatus?.toLowerCase() === 'completed') return 'Completed';
   // Paused (awaiting an out-of-band event, e.g. a manual review) is not
@@ -462,7 +476,12 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // arrive. JourneyStatus has no Failed member, so this surfaces as what
     // that contract can represent: a terminal result screen carrying a fail
     // decision.
-    if (isFailed(goStatus)) {
+    //
+    // A failed result.status reads the same whatever the journey status
+    // beside it, as in toRecord: otherwise a Completed journey whose result
+    // is error or abandoned shows "Verification complete" here while its
+    // record says the checks could not run.
+    if (isFailed(goStatus) || resultFailed(response.result)) {
       return {
         interactionId,
         kind: 'result',
@@ -600,7 +619,9 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // On a Failed journey the result object is often absent or incomplete;
     // mapDecision would default that to REFER, telling the customer a review
     // is under way when nothing is running at all.
-    const decision: Decision = isFailed(response.status) ? 'fail' : mapDecision(response.result);
+    // A failed result.status overrides any classification beside it.
+    const journeyFailed = isFailed(response.status) || resultFailed(response.result);
+    const decision: Decision = journeyFailed ? 'fail' : mapDecision(response.result);
     // The journey graph's own terminal decision node has no name and no
     // result — every real module has both. Without this filter it falls back
     // to its raw nodeId (e.g. "mtrehx2922ie24j37zu") and shows up as a fake
@@ -625,12 +646,14 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // advice at all, and reading only the advice reports that as a decline.
     // Three signals, any of which means the checks did not run to a verdict:
     //
-    //  - the journey itself reports Error or Failed. This is the one that
-    //    matters in practice: a module that could not execute may not appear
-    //    in `steps` at all — a live Northbank run returns status=Error with
-    //    only Address Verification listed and Document Classification absent
-    //    entirely — so the failed step is invisible, and the journey status
-    //    is the only thing saying anything went wrong;
+    //  - the journey itself reports Error or Failed, or its result.status is
+    //    error (a terminal module error or the platform abandoning the
+    //    journey). This is the one that matters in practice: a module that
+    //    could not execute may not appear in `steps` at all — a live
+    //    Northbank run returns status=Error with only Address Verification
+    //    listed and Document Classification absent entirely — so the failed
+    //    step is invisible, and the journey status is the only thing saying
+    //    anything went wrong;
     //  - a step carrying `result.error`, which is where an errored step
     //    reports itself rather than through a status of "error";
     //  - a step whose status is literally "error".
@@ -641,7 +664,7 @@ export function createInteractionMapper(screenPlan: ScreenPlanConfig): Interacti
     // a decline, when nothing was decided about the customer at all.
     const moduleAdvice = firstModuleErrorAction(response);
     const systemError =
-      isFailed(response.status) ||
+      journeyFailed ||
       allSteps(response).some((s) => s.result?.error !== undefined || s.result?.status?.toLowerCase() === 'error');
 
     const title = systemError

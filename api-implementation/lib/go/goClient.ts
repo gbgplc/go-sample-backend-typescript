@@ -1,10 +1,12 @@
 import { Interaction, JourneyStatus, RecordResponse, StateResponse, SubmitInteractionResponse } from '../dto/types';
-import { goMode } from '../config';
+import { callsGo, goMode } from '../config';
 
 export interface GoStartResult {
   instanceId: string;
   status: JourneyStatus;
   interaction: Interaction;
+  /** The GBG Go test scenario the journey runs on; absent on a real run, so always absent in mock and live modes. */
+  testScenario?: string;
 }
 
 /**
@@ -16,9 +18,10 @@ export interface GoStartResult {
  */
 export interface GoClient {
   /**
-   * @param scenarioHint mock-mode-only affordance (mirrors the front end's own
-   * ?mock_scenario= query param) so every designed outcome can be reached on
-   * demand. A live client ignores it — which branch plays is Go's decision.
+   * @param scenarioHint the front end's own ?mock_scenario= query param, so
+   * every designed outcome can be reached on demand. The mock reads it as a
+   * fixture scenario, and test-scenarios mode as the name of a GBG Go test
+   * scenario. Live mode ignores it — which branch plays is Go's decision.
    */
   startJourney(
     resourceId: string,
@@ -54,7 +57,7 @@ const globalForGoClient = globalThis as unknown as { __goClient?: GoClient };
 export async function getGoClient(): Promise<GoClient> {
   if (globalForGoClient.__goClient) return globalForGoClient.__goClient;
   globalForGoClient.__goClient =
-    goMode === 'live'
+    callsGo(goMode)
       ? (await import('./live/goApiClient')).goApiClient
       : (await import('./mock/mockGoClient')).mockGoClient;
   return globalForGoClient.__goClient;

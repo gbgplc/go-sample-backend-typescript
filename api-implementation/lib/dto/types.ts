@@ -35,7 +35,9 @@ export type ErrorCode =
   | 'SESSION_EXPIRED'
   | 'INTERACTION_STALE'
   | 'UPSTREAM_UNAVAILABLE'
-  | 'RATE_LIMITED';
+  | 'RATE_LIMITED'
+  /** A request this service cannot act on as sent; retrying it unchanged fails the same way. */
+  | 'BAD_REQUEST';
 
 export interface ModuleRun {
   label: string;

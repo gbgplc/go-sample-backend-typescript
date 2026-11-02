@@ -15,11 +15,17 @@ export class Session {
   private lastSubmittedData: Record<string, unknown> | undefined = undefined;
   private lastSubmittedResponse: SubmitInteractionResponse | null = null;
 
+  /**
+   * @param testScenario the GBG Go test scenario this session's journey runs
+   *   on, or undefined for a real run. Kept here, not in a per-instance cache,
+   *   so it lives exactly as long as the session whose record it labels.
+   */
   constructor(
     readonly id: string,
     readonly cookieToken: string,
     readonly goInstanceId: string,
     initialInteractionId: string | null,
+    readonly testScenario?: string,
     readonly createdAt: number = Date.now()
   ) {
     this.currentInteractionId = initialInteractionId;
