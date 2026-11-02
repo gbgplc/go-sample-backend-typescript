@@ -3,7 +3,7 @@ import { defaultTestScenario, goMode, marketConfig, resolveGoBaseUrl, SCENARIO_N
 import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
 import { buildSubmitRequest, fieldsByGoPath } from './buildSubmitRequest';
-import { defaultInteractionMapper, isFailed, resultFailed } from './defaultInteractionMapper';
+import { defaultInteractionMapper, isFailed, resultFailed, side2Required } from './defaultInteractionMapper';
 import {
   collectsOf,
   GoErrorEnvelope,
@@ -354,9 +354,12 @@ async function resolveAttachment(
   // The back of the document, when Go has asked for it. Checked first: by
   // this point side 1 is submitted and the document stage counts as
   // completed, so the stage-based check below would read the capture as the
-  // selfie and overwrite the wrong element.
-  const instructions = lastInstructionsByInstance.get(instanceId) ?? [];
-  if (instructions.some((i) => i.toLowerCase() === 'side2required') || outstanding.includes('PrimaryDocument/side2Image')) {
+  // selfie and overwrite the wrong element. The same rule that chose the
+  // screen, so a back-of-document screen and the capture taken on it can't
+  // disagree.
+  const marker = defaultInteractionMapper.secondSideMarker();
+  const backSubmitted = marker !== undefined && completedStages(instanceId).has(marker);
+  if (side2Required(outstanding, lastInstructionsByInstance.get(instanceId), backSubmitted)) {
     const back = { ...data };
     delete back['attachmentRef'];
     back['documentBack'] = ref;
@@ -463,6 +466,10 @@ export const goApiClient: GoClient = {
       fieldsByGoPath(payload)
     );
     if (submittedStage) recordStage(instanceId, submittedStage);
+    // The back shares the document stage, so it is recorded separately: Go's
+    // next fetch can still say Side2Required (see side2Required).
+    const marker = defaultInteractionMapper.secondSideMarker();
+    if (marker && payload && 'documentBack' in payload) recordStage(instanceId, marker);
     // The submit response only acknowledges receipt; the next screen comes
     // from re-fetching the interaction, same as the mock's own response shape.
     return fetchInteraction(instanceId);
