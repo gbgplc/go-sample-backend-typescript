@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { sdkServerUrl } from '@/lib/config';
 import { buildSdkSubmitRequest } from '@/lib/go/sdk/buildSdkSubmitRequest';
+import { authUrlProblem } from '@/lib/go/sdk/goSdkAuthService';
 import { toInteractionView, toStateView } from '@/lib/go/sdk/sdkResponses';
 import type { FetchInteractionResponse, GetJourneyStateResponse } from '@gbg/go-core/models/operations';
 
@@ -98,6 +99,19 @@ describe('buildSdkSubmitRequest', () => {
     expect(request.context?.subject).toEqual({ identity: { firstName: 'Ada' } });
   });
 
+  it('does not resolve a ref by a leaf that belongs to another domain element', () => {
+    const { request } = buildSdkSubmitRequest(
+      'inst-1',
+      'int-1',
+      { 'PreviousAddresses/postalCode': 'OX1 1AA', 'CurrentAddress/postalCode': 'SW1A 2AA' },
+      CONSENT_URL,
+      TERMS
+    );
+
+    expect(request.participants).toEqual([{ domainElementId: 'CurrentAddress' }]);
+    expect(request.context?.subject.identity?.currentAddress).toEqual({ postalCode: 'SW1A 2AA' });
+  });
+
   it('skips null and undefined values rather than sending the string "null"', () => {
     const { request } = buildSdkSubmitRequest('inst-1', 'int-1', { 'PersonalEmail/email': null, firstName: 'Ada' }, CONSENT_URL, TERMS);
 
@@ -111,6 +125,18 @@ describe('buildSdkSubmitRequest', () => {
       participants: [],
       context: { subject: {} },
     });
+  });
+});
+
+describe('authUrlProblem — the SDK can only reach /as/token.oauth2', () => {
+  it('accepts the public platform token endpoint', () => {
+    expect(authUrlProblem('https://api.auth.gbgplc.com/as/token.oauth2')).toBeUndefined();
+  });
+
+  it('names the problem for a path the SDK would silently replace', () => {
+    expect(authUrlProblem('https://idp.example.com/realms/demo/protocol/openid-connect/token')).toContain(
+      '/realms/demo/protocol/openid-connect/token'
+    );
   });
 });
 

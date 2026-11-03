@@ -41,7 +41,12 @@ const INTERACTION = {
 
 beforeEach(() => {
   vi.resetModules();
-  for (const key of ['__goSdk', '__sdkLastOutstandingByInstance', '__sdkLastInstructionsByInstance', '__sdkCompletedStagesByInstance']) {
+  for (const key of [
+    '__sdkLastOutstandingByInstance',
+    '__sdkLastInstructionsByInstance',
+    '__sdkLastCollectableByInstance',
+    '__sdkCompletedStagesByInstance',
+  ]) {
     delete (globalThis as Record<string, unknown>)[key];
   }
   seen = [];
@@ -186,6 +191,36 @@ describe('goSdkClient against the real SDK', () => {
     expect((error as OnboardingException).fields).toEqual({ 'PersonalEmail/email': 'Invalid email address' });
   });
 
+  it('still reports per-field errors when the error body fails the SDK schema', async () => {
+    // No `name` or `action`: the SDK rejects this as an ErrorResponse and
+    // throws ResponseValidationError instead, with the raw body intact.
+    routes[SUBMIT_PATH] = () =>
+      json(400, { errors: [{ code: 'E1', problem: 'context.subject.identity.emails.0.email: Invalid email address' }] });
+
+    const error = await (await client())
+      .submitInteraction('inst-1', 'int-1', { 'PersonalEmail/email': 'nope' })
+      .catch((e: unknown) => e);
+
+    expect((error as OnboardingException).code).toBe('VALIDATION_FAILED');
+    expect((error as OnboardingException).fields).toEqual({ 'PersonalEmail/email': 'Invalid email address' });
+  });
+
+  it('retries a rejected token on the journeys calls too, minting once per attempt', async () => {
+    let rejected = false;
+    routes[STATE_PATH] = (s) => {
+      if (!rejected) {
+        rejected = true;
+        return json(401, { errors: [{ code: '2001', name: 'UNAUTHORIZED', problem: 'Authentication required', action: '' }] });
+      }
+      return json(200, { instanceId: 'inst-1', status: 'InProgress', context: { process: { steps: [] } } });
+    };
+
+    await (await client()).fetchState('inst-1');
+
+    expect(calls(STATE_PATH).map((c) => c.authorization)).toEqual(['Bearer token-1', 'Bearer token-2']);
+    expect(calls(TOKEN_PATH)).toHaveLength(2);
+  });
+
   it.each([
     [404, 'SESSION_EXPIRED'],
     [429, 'RATE_LIMITED'],
@@ -241,6 +276,56 @@ describe('goSdkClient against the real SDK', () => {
     expect(state.status).toBe('Completed');
     expect(state.decision).toBe('refer');
     expect(state.moduleRuns?.map((run) => run.label)).toEqual(['Facematch Verification']);
+  });
+
+  it('treats a failed result.status as a terminal fail, whatever the classification says', async () => {
+    routes[STATE_PATH] = () =>
+      json(200, {
+        instanceId: 'inst-1',
+        status: 'InProgress',
+        result: { status: 'error', outcomeClassification: 'positive' },
+        context: { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } },
+      });
+
+    const state = await (await client()).fetchState('inst-1');
+
+    expect(state.status).toBe('Completed');
+    expect(state.decision).toBe('fail');
+  });
+
+  it('does not count an explicit null classification as a decision', async () => {
+    routes[STATE_PATH] = () =>
+      json(200, {
+        instanceId: 'inst-1',
+        status: 'InProgress',
+        result: { outcomeClassification: null },
+        context: { process: { steps: [{ name: 'Document Classification', result: { status: 'complete', outcome: 'Document Classified' } }] } },
+      });
+
+    const state = await (await client()).fetchState('inst-1');
+
+    expect(state.status).toBe('InProgress');
+  });
+
+  it('routes a capture by the collected refs, not raw outstanding (document not listed as outstanding)', async () => {
+    // Meridian's document stage is not alwaysCollect, so the stage is found
+    // only from the list it is matched against.
+    vi.stubEnv('MARKET', 'meridian-health');
+    routes[FETCH_PATH] = () =>
+      json(200, {
+        ...INTERACTION,
+        interaction: { collects: [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'Selfie/selfieImage' }] },
+        outstanding: ['Selfie/selfieImage'],
+        instructions: [],
+      });
+    const goClient = await client();
+    const screen = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'aW1hZ2U=' });
+
+    expect(screen.interaction.stage).toBe('Document');
+    const subject = (calls(SUBMIT_PATH)[0]?.body as { context: { subject: Record<string, unknown> } }).context.subject;
+    expect(subject.documents).toEqual([{ type: 'Primary', side1Image: 'aW1hZ2U=' }]);
+    expect(subject.biometrics).toBeUndefined();
   });
 
   it('refuses a slim state view, which has no step status or timing', async () => {
