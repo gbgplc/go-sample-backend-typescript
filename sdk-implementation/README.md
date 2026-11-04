@@ -1,8 +1,7 @@
 # Onboarding service (TypeScript) — SDK implementation
 
 One of two implementations in this repo: this one calls GBG Go v2 through the
-official TypeScript Core SDK, `@gbg/go-core` (alpha, pinned to
-`0.2.0-alpha.0`). See `../api-implementation/` for the sibling built on
+official TypeScript Core SDK, `@gbg/go-core` (pinned to `0.2.0`). See `../api-implementation/` for the sibling built on
 hand-rolled `fetch`, and the root `README.md` for how the two relate. Both
 serve the identical REST contract — a front end cannot tell which one it is
 talking to — and share every Go-agnostic file (`app/`, `middleware.ts`,
@@ -123,12 +122,13 @@ npm test
 Each gap below is worked around here; the ones worth raising with the SDK
 developer are listed at the end.
 
-**(a) `/v2/captain` is in every operation path.** The SDK's servers are
-host-only (`https://eu.platform.go.gbgplc.com`) and each operation adds
-`/v2/captain/...` itself, so passing the documented base URL to `serverURL`
-requests `/v2/captain/v2/captain/...`, which Go answers with a misleading 401.
-`sdkServerUrl()` in `lib/config/index.ts` strips the suffix (case-insensitive)
-from the configured `baseUrl` and keeps any other path prefix.
+**(a) `/v2/captain` was in every operation path — FIXED in alpha.1.** Under
+alpha.0 the SDK's servers were host-only and each operation added
+`/v2/captain/...` itself, so the documented base URL requested
+`/v2/captain/v2/captain/...`. Since alpha.1 the server URLs carry
+`/v2/captain` and operation paths start at `/journey/...`, so
+`sdkServerUrl()` in `lib/config/index.ts` passes the configured `baseUrl`
+through, minus its trailing slash.
 
 **(b) Fetch and submit ignore the client's token.** The global
 `customerAccess` (a token provider here) only covers `journeys.*`.
@@ -137,11 +137,14 @@ object, and with nothing in it the SDK sends no `Authorization` header at
 all. The client passes `{ interactionAccess: token }` on every call.
 
 **(c) Full and slim responses arrive as a union.** Both interaction/fetch
-and state/fetch return a TS union of a full and a slim variant, picked by the
-SDK's best-match heuristic rather than by the `view` requested. `sdkResponses.ts`
-reads the fields both fetch variants share. For state, only the full view has
-step status and timing, so a slim state response is refused and logged
-rather than misreporting every module as still running.
+and state/fetch return a union discriminated by the response's `view`
+(`full`/`slim`, since alpha.1; alpha.0 picked by best field match). A body
+with no recognised `view`, or one that fails its variant's schema, becomes
+the SDK's `Unknown` member (`{ view: "UNKNOWN", raw, isUnknown: true }`);
+`sdkResponses.ts` reads it from `raw` and `goSdkClient.ts` logs a warning.
+`sdkResponses.ts` reads the fields both fetch variants share. For state,
+only the full view has step status and timing, so a slim state response is
+refused and logged rather than misreporting every module as still running.
 
 **(d) Most of the interesting fields are untyped.** On the full fetch variant
 `interaction`, `result` and `context` are records and `outstanding`/
@@ -185,3 +188,23 @@ uses it. The SDK's `scope` is also a one-value enum (`gbg.token`), so
 **(j) The SDK's debug logger prints secrets.** With `debugLogger` set (or
 `GO_DEBUG`), it logs the `Authorization` header and full request bodies,
 including base64 document and selfie images. It is not enabled here.
+
+**(k) A saved test scenario can't be started by name.** `journeys.start` has
+no way to send the `x-gbg-scenario` header; only an inline `scenario` in the
+request body is supported.
+
+### Still worth raising with the SDK developer (as of 0.2.0)
+
+- (e) No catch-all on the start or submit subject.
+- (g) Submit has no in-band error code.
+- (i) The token path is fixed at `/as/token.oauth2`, and `scope` is a
+  one-value enum.
+- (k) No `x-gbg-scenario` header on `journeys.start`.
+
+## Upgrading to 0.2.0
+
+A drop-in upgrade from alpha.1: no code changes, and all 95 tests pass
+unchanged. Comparing the two published packages, the only change besides
+the version strings is `JourneyStartResponse.test`, which is now
+`boolean` instead of the literal `true`. A start response carrying
+`test: false` no longer fails the SDK's schema. Nothing here reads it yet.
