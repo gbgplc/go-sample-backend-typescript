@@ -17,6 +17,13 @@ import { GoTokenResponse } from './dto';
 
 const REFRESH_MARGIN_SECONDS = 30;
 
+/**
+ * A token's lifetime when the response gives none (expires_in is optional).
+ * Reading a missing value as 0 cached the token for no time at all, so every
+ * call minted a new one. Same fallback as go-sample-backend-java.
+ */
+const DEFAULT_TTL_SECONDS = 300;
+
 let cachedToken: string | undefined;
 let cachedTokenExpiresAt = 0;
 let mintingPromise: Promise<string> | undefined;
@@ -57,7 +64,7 @@ async function mintToken(): Promise<string> {
   }
 
   cachedToken = body.access_token;
-  const expiresIn = body.expires_in ?? 0;
+  const expiresIn = body.expires_in !== undefined && body.expires_in > 0 ? body.expires_in : DEFAULT_TTL_SECONDS;
   cachedTokenExpiresAt = Date.now() + Math.max(0, expiresIn - REFRESH_MARGIN_SECONDS) * 1000;
   return cachedToken;
 }

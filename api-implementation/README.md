@@ -246,9 +246,15 @@ npm test
   branching, the stage-plan "rail" builder), each market's screen-plan config,
   and the live-mode module-verdict mapping.
 - `goApiClient.test.ts` runs the live client against a fake Go (a stubbed
-  `fetch`): the token retry on 401/403, timeouts, and Go validation problems
-  mapped back to the submitted fields. `goApiClientTestScenarios.test.ts`
-  does the same for test-scenarios mode.
+  `fetch`): the token retry on 401/403 and a token with no `expires_in`,
+  timeouts, Go validation problems mapped back to the submitted fields, the
+  back-of-document routing, and a failed fetch after a submit Go accepted
+  (answered with the processing screen, so the advance is still recorded).
+  `goApiClientTestScenarios.test.ts` does the same for test-scenarios mode.
+- `devReload.test.ts` loads a second copy of the error and session-lock
+  modules, as a `next dev` reload does, and checks the two copies still
+  agree: an error the cached Go client throws keeps its own status instead
+  of becoming a 500.
 
 ## What's a placeholder here
 
@@ -267,8 +273,9 @@ npm test
   backend — which fields a customer should actually see is a compliance
   decision, not yet made.
 - **Session storage** is in-memory and single-node (a `Map`, stashed on
-  `globalThis` so `next dev`'s hot-reload doesn't wipe it) — swap for Redis
-  or similar before running more than one instance.
+  `globalThis` with the per-session locks so `next dev`'s hot-reload doesn't
+  wipe or split them) — swap for Redis or similar before running more than
+  one instance.
 - **The submit field table** (`lib/go/live/buildSubmitRequest.ts`) is a
   sample mapping, the same one go-sample-backend-java uses. A field it does
   not know falls back to a flat `subject.<key>` placement, which a real
