@@ -3,7 +3,7 @@ import { defaultTestScenario, goMode, marketConfig, resolveGoBaseUrl, SCENARIO_N
 import { OnboardingException } from '../../errors/onboardingException';
 import { GoClient, GoStartResult } from '../goClient';
 import { buildSubmitRequest, fieldsByGoPath } from './buildSubmitRequest';
-import { defaultInteractionMapper, isFailed, resultFailed, side2Required } from './defaultInteractionMapper';
+import { defaultInteractionMapper, isFailed, resultFailed } from './defaultInteractionMapper';
 import {
   collectsOf,
   GoErrorEnvelope,
@@ -79,6 +79,19 @@ function recordStage(instanceId: string, stageName: string): void {
   const done = completedStagesByInstance.get(instanceId) ?? new Set<string>();
   done.add(stageName);
   rememberBounded(completedStagesByInstance, instanceId, done);
+}
+
+/**
+ * Drops the back-of-document marker once Go says Side2Done. It exists to
+ * ignore the stale Side2Required on the fetch straight after the back is
+ * submitted; kept for good, it would also ignore Go asking for the back again
+ * with the instruction alone, and send the customer to the selfie instead.
+ */
+function forgetBackOnceDone(instanceId: string, instructions: string[]): void {
+  const marker = defaultInteractionMapper.secondSideMarker();
+  if (marker && instructions.some((i) => i.toLowerCase() === 'side2done')) {
+    completedStagesByInstance.get(instanceId)?.delete(marker);
+  }
 }
 
 /**
@@ -323,6 +336,7 @@ async function fetchInteraction(instanceId: string): Promise<SubmitInteractionRe
   // go-sample-backend-java).
   rememberOutstanding(instanceId, response.outstanding ?? []);
   rememberInstructions(instanceId, response.instructions ?? []);
+  forgetBackOnceDone(instanceId, response.instructions ?? []);
   const collectable = collectsOf(response).map((collect) => collect.ref);
   rememberCollectable(instanceId, collectable.length > 0 ? collectable : (response.outstanding ?? []));
   const interaction = defaultInteractionMapper.toInteraction(response, completedStages(instanceId));
@@ -357,9 +371,8 @@ async function resolveAttachment(
   // selfie and overwrite the wrong element. The same rule that chose the
   // screen, so a back-of-document screen and the capture taken on it can't
   // disagree.
-  const marker = defaultInteractionMapper.secondSideMarker();
-  const backSubmitted = marker !== undefined && completedStages(instanceId).has(marker);
-  if (side2Required(outstanding, lastInstructionsByInstance.get(instanceId), backSubmitted)) {
+  const instructions = lastInstructionsByInstance.get(instanceId);
+  if (defaultInteractionMapper.wantsSecondSide(outstanding, instructions, completedStages(instanceId))) {
     const back = { ...data };
     delete back['attachmentRef'];
     back['documentBack'] = ref;

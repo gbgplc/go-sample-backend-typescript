@@ -187,6 +187,70 @@ describe('goApiClient', () => {
     expect(submitted[2]!.documents).toBeUndefined();
   });
 
+  it('asks for the back again after Side2Done when Go does, even with the instruction alone', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }];
+    const fetches = [
+      { outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'], instructions: ['LazySide2CollectionRequired'] },
+      { outstanding: ['Selfie/selfieImage', 'PrimaryDocument/side2Image'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Done'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+    ];
+    let fetchCount = 0;
+    const submitted: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(input).pathname;
+      if (path === FETCH_PATH) {
+        const step = fetches[Math.min(fetchCount++, fetches.length - 1)];
+        return json(200, { ...INTERACTION, interaction: { collects }, ...step });
+      }
+      if (path === SUBMIT_PATH) {
+        submitted.push((JSON.parse(String(init?.body)) as { context: { subject: Record<string, unknown> } }).context.subject);
+        return json(200, { status: 'success' });
+      }
+      return routes[path]!({ url: input, authorization: null, hasSignal: true });
+    });
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    const afterBack = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjaw==' });
+    expect(afterBack.interaction.stage).toBe('Biometrics');
+    expect((await goClient.fetchInteraction('inst-1')).interaction.stage).toBe('Biometrics');
+    const askedAgain = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjazI=' });
+
+    expect(askedAgain.interaction.captureType).toBe('document-back');
+    expect(submitted[2]!.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjazI=' }]);
+  });
+
+  it('sends the front as the front when Go lists side2Image before the front is taken', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    let submitted: { context: { subject: Record<string, unknown> } } | undefined;
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(input).pathname;
+      if (path === FETCH_PATH) {
+        return json(200, {
+          ...INTERACTION,
+          interaction: { collects: [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }] },
+          outstanding: ['PrimaryDocument/side1Image', 'PrimaryDocument/side2Image', 'Selfie/selfieImage'],
+          instructions: ['Side2Required'],
+        });
+      }
+      if (path === SUBMIT_PATH) submitted = JSON.parse(String(init?.body));
+      return routes[path]!({ url: input, authorization: null, hasSignal: true });
+    });
+    const goClient = await client();
+
+    const screen = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+
+    expect(screen.interaction.stage).toBe('Document');
+    expect(screen.interaction.captureType).not.toBe('document-back');
+    expect(submitted?.context.subject.documents).toEqual([{ type: 'Primary', side1Image: 'ZnJvbnQ=' }]);
+  });
+
   it('treats a failed result.status as terminal, and a null classification as no decision', async () => {
     const STATE_PATH = '/v2/captain/journey/state/fetch';
     const steps = { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } };

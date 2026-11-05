@@ -147,14 +147,17 @@ describe('goSdkClient against the real SDK', () => {
     });
   });
 
-  it('routes a capture to the back of the document when Go asks for side 2', async () => {
+  it('routes a capture to the back of the document when Go asks for side 2 after the front', async () => {
     routes[FETCH_PATH] = () => json(200, { ...INTERACTION, instructions: ['Side2Required'] });
     const goClient = await client();
     await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
     await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjaw==' });
 
-    const subject = (calls(SUBMIT_PATH)[0]?.body as { context: { subject: { documents: unknown[] } } }).context.subject;
-    expect(subject.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjaw==' }]);
+    const documents = calls(SUBMIT_PATH).map(
+      (c) => (c.body as { context: { subject: { documents: unknown[] } } }).context.subject.documents
+    );
+    expect(documents).toEqual([[{ type: 'Primary', side1Image: 'ZnJvbnQ=' }], [{ type: 'Primary', side2Image: 'YmFjaw==' }]]);
   });
 
   it('retries once with a fresh token when Go rejects the token', async () => {
@@ -372,6 +375,54 @@ describe('goSdkClient against the real SDK', () => {
     expect(subjects[1]!.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjaw==' }]);
     expect(subjects[2]!.biometrics).toEqual([{ type: 'Selfie', selfieImage: 'c2VsZmll' }]);
     expect(subjects[2]!.documents).toBeUndefined();
+  });
+
+  it('asks for the back again after Side2Done when Go does, even with the instruction alone', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }];
+    const fetches = [
+      { outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'], instructions: ['LazySide2CollectionRequired'] },
+      { outstanding: ['Selfie/selfieImage', 'PrimaryDocument/side2Image'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Done'] },
+      { outstanding: ['Selfie/selfieImage'], instructions: ['Side2Required'] },
+    ];
+    let fetchCount = 0;
+    routes[FETCH_PATH] = () =>
+      json(200, { ...INTERACTION, interaction: { collects }, ...fetches[Math.min(fetchCount++, fetches.length - 1)] });
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    const afterBack = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjaw==' });
+    expect(afterBack.interaction.stage).toBe('Biometrics');
+    expect((await goClient.fetchInteraction('inst-1')).interaction.stage).toBe('Biometrics');
+    const askedAgain = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'YmFjazI=' });
+
+    expect(askedAgain.interaction.captureType).toBe('document-back');
+    const subject = (calls(SUBMIT_PATH)[2]?.body as { context: { subject: Record<string, unknown> } }).context.subject;
+    expect(subject.documents).toEqual([{ type: 'Primary', side2Image: 'YmFjazI=' }]);
+  });
+
+  it('sends the front as the front when Go lists side2Image before the front is taken', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    routes[FETCH_PATH] = () =>
+      json(200, {
+        ...INTERACTION,
+        interaction: { collects: [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'PrimaryDocument/side2Image' }, { ref: 'Selfie/selfieImage' }] },
+        outstanding: ['PrimaryDocument/side1Image', 'PrimaryDocument/side2Image', 'Selfie/selfieImage'],
+        instructions: ['Side2Required'],
+      });
+    const goClient = await client();
+
+    const screen = await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+
+    expect(screen.interaction.stage).toBe('Document');
+    expect(screen.interaction.captureType).not.toBe('document-back');
+    const subject = (calls(SUBMIT_PATH)[0]?.body as { context: { subject: Record<string, unknown> } }).context.subject;
+    expect(subject.documents).toEqual([{ type: 'Primary', side1Image: 'ZnJvbnQ=' }]);
   });
 
   /** The SDK returns its Unknown member, with the body in `raw`, which is still read. */
