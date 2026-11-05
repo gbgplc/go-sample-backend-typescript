@@ -19,6 +19,14 @@ import { OnboardingException } from '../../errors/onboardingException';
 
 const REFRESH_MARGIN_SECONDS = 30;
 
+/**
+ * A token's lifetime when the response gives none (the SDK types `expiresIn`
+ * as optional). Reading a missing value as 0 cached the token for no time at
+ * all, so every call minted a new one. Same fallback as
+ * go-sample-backend-java.
+ */
+const DEFAULT_TTL_SECONDS = 300;
+
 let cachedToken: string | undefined;
 let cachedTokenExpiresAt = 0;
 let mintingPromise: Promise<string> | undefined;
@@ -96,7 +104,8 @@ async function mintToken(): Promise<string> {
     throw OnboardingException.upstreamUnavailable('Could not authenticate with the identity platform.');
   }
   cachedToken = body.accessToken;
-  cachedTokenExpiresAt = Date.now() + Math.max(0, (body.expiresIn ?? 0) - REFRESH_MARGIN_SECONDS) * 1000;
+  const expiresIn = body.expiresIn !== undefined && body.expiresIn > 0 ? body.expiresIn : DEFAULT_TTL_SECONDS;
+  cachedTokenExpiresAt = Date.now() + Math.max(0, expiresIn - REFRESH_MARGIN_SECONDS) * 1000;
   return cachedToken;
 }
 

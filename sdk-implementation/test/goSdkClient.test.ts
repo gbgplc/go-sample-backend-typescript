@@ -425,6 +425,44 @@ describe('goSdkClient against the real SDK', () => {
     expect(subject.documents).toEqual([{ type: 'Primary', side1Image: 'ZnJvbnQ=' }]);
   });
 
+  it('answers a submit Go accepted with the processing screen when the fetch after it fails', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'Selfie/selfieImage' }];
+    let fetchCount = 0;
+    routes[FETCH_PATH] = () =>
+      ++fetchCount === 2
+        ? json(500, { errors: [{ code: '500', name: 'E', problem: 'unavailable', action: '' }] })
+        : json(200, {
+            ...INTERACTION,
+            interaction: { collects },
+            outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'],
+            instructions: ['Side2Done'],
+          });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    const answered = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    // The front end polls on, and the next capture is the selfie, not the document again.
+    await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'c2VsZmll' });
+
+    expect(answered).toMatchObject({ status: 'InProgress', interaction: { kind: 'processing', interactionId: 'int-1' } });
+    const subject = (calls(SUBMIT_PATH)[1]?.body as { context: { subject: Record<string, unknown> } }).context.subject;
+    expect(subject.biometrics).toEqual([{ type: 'Selfie', selfieImage: 'c2VsZmll' }]);
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('keeps a token whose response gives no expires_in instead of minting on every call', async () => {
+    routes[TOKEN_PATH] = () => json(200, { access_token: `token-${++tokenCount}`, token_type: 'Bearer' });
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    await goClient.fetchInteraction('inst-1');
+
+    expect(calls(TOKEN_PATH)).toHaveLength(1);
+  });
+
   /** The SDK returns its Unknown member, with the body in `raw`, which is still read. */
   it('still reads a fetch that carries no view, and says so', async () => {
     const { view: _view, ...withoutView } = INTERACTION;

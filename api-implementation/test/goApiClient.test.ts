@@ -251,6 +251,52 @@ describe('goApiClient', () => {
     expect(submitted?.context.subject.documents).toEqual([{ type: 'Primary', side1Image: 'ZnJvbnQ=' }]);
   });
 
+  it('answers a submit Go accepted with the processing screen when the fetch after it fails', async () => {
+    vi.stubEnv('MARKET', 'meridian-health');
+    const collects = [{ ref: 'PrimaryDocument/side1Image' }, { ref: 'Selfie/selfieImage' }];
+    let fetchCount = 0;
+    const submitted: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(input).pathname;
+      if (path === FETCH_PATH) {
+        if (++fetchCount === 2) return json(500, { errors: [{ problem: 'unavailable' }] });
+        return json(200, {
+          ...INTERACTION,
+          interaction: { collects },
+          outstanding: ['PrimaryDocument/side1Image', 'Selfie/selfieImage'],
+          instructions: ['Side2Done'],
+        });
+      }
+      if (path === SUBMIT_PATH) {
+        submitted.push((JSON.parse(String(init?.body)) as { context: { subject: Record<string, unknown> } }).context.subject);
+        return json(200, { status: 'success' });
+      }
+      return routes[path]!({ url: input, authorization: null, hasSignal: true });
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    const answered = await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'ZnJvbnQ=' });
+    // The front end polls on, and the next capture is the selfie, not the document again.
+    await goClient.fetchInteraction('inst-1');
+    await goClient.submitInteraction('inst-1', 'int-1', { attachmentRef: 'c2VsZmll' });
+
+    expect(answered).toMatchObject({ status: 'InProgress', interaction: { kind: 'processing', interactionId: 'int-1' } });
+    expect(submitted[1]!.biometrics).toEqual([{ type: 'Selfie', selfieImage: 'c2VsZmll' }]);
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('keeps a token whose response gives no expires_in instead of minting on every call', async () => {
+    routes['/as/token.oauth2'] = () => json(200, { access_token: `token-${++tokenCount}` });
+    const goClient = await client();
+
+    await goClient.fetchInteraction('inst-1');
+    await goClient.fetchInteraction('inst-1');
+
+    expect(calls('/as/token.oauth2')).toHaveLength(1);
+  });
+
   it('treats a failed result.status as terminal, and a null classification as no decision', async () => {
     const STATE_PATH = '/v2/captain/journey/state/fetch';
     const steps = { process: { steps: [{ name: 'Facematch Verification', result: { status: 'complete' } }] } };

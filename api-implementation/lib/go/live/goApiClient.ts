@@ -323,6 +323,20 @@ function statusFrom(interaction: Interaction): JourneyStatus {
   return 'PendingInput';
 }
 
+/** What a submit Go accepted answers with when the fetch after it fails. The front end polls on from it. */
+function processingAfterSubmit(interactionId: string): SubmitInteractionResponse {
+  return {
+    status: 'InProgress',
+    interaction: {
+      interactionId,
+      kind: 'processing',
+      stage: 'Processing',
+      title: 'Running Identity Verification',
+      body: 'This usually takes a few seconds.',
+    },
+  };
+}
+
 async function fetchInteraction(instanceId: string): Promise<SubmitInteractionResponse> {
   const response = await call<GoInteractionFetchResponse>(() =>
     authedFetch('journey/interaction/fetch', { instanceId } satisfies GoInstanceRequest)
@@ -485,7 +499,21 @@ export const goApiClient: GoClient = {
     if (marker && payload && 'documentBack' in payload) recordStage(instanceId, marker);
     // The submit response only acknowledges receipt; the next screen comes
     // from re-fetching the interaction, same as the mock's own response shape.
-    return fetchInteraction(instanceId);
+    //
+    // Go has accepted the submit by now, so a failed re-fetch must not fail
+    // it: the session would not record the advance, and the client's retry
+    // would route the same capture against progress that has already moved on
+    // (the front of a document resent as the selfie). The processing screen
+    // instead, which the front end polls on from.
+    try {
+      return await fetchInteraction(instanceId);
+    } catch (e) {
+      console.warn(
+        `GBG Go accepted the submit for instance ${instanceId}, but the fetch after it failed; answering with the processing screen`,
+        e instanceof Error ? e.message : e
+      );
+      return processingAfterSubmit(interactionId);
+    }
   },
 
   async fetchState(instanceId): Promise<StateResponse> {
