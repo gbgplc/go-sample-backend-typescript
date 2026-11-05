@@ -239,6 +239,55 @@ describe('goSdkClient against the real SDK', () => {
     expect((error as OnboardingException).code).toBe(code);
   });
 
+  it.each([404, 410])('reports a %i on journey/start as a journey that cannot start, not an ended session', async (status) => {
+    routes[START_PATH] = () => json(status, { errors: [{ code: '1001', name: 'NOT_FOUND', problem: 'Delivery not found', action: '' }] });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = (await (await client()).startJourney('journey@v1', undefined, null).catch((e: unknown) => e)) as OnboardingException;
+
+    expect(error.code).toBe('UPSTREAM_UNAVAILABLE');
+    expect(error.retryable).toBe(false);
+    expect(error.message).toBe('Could not start your verification.');
+    expect(logged.mock.calls.flat().join(' ')).toContain("Check this market's resourceId");
+    logged.mockRestore();
+  });
+
+  it('reports a field the SDK refuses to send against that field, not as an outage', async () => {
+    const { call } = await import('@/lib/go/sdk/goSdkClient');
+    const { Go } = await import('@gbg/go-core');
+    const request = {
+      instanceId: 'inst-1',
+      interactionId: 'int-1',
+      participants: [{ domainElementId: 'PersonalEmail' }],
+      context: { subject: { identity: { emails: [{ type: 'personal', email: 42 }] } } },
+    };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = (await call(
+      () => new Go().interactions.submit({ interactionAccess: 't' }, request as never),
+      { 'context.subject.identity.emails.0.email': 'PersonalEmail/email' }
+    ).catch((e: unknown) => e)) as OnboardingException;
+
+    expect(error.code).toBe('VALIDATION_FAILED');
+    expect(Object.keys(error.fields ?? {})).toEqual(['PersonalEmail/email']);
+    expect(calls(SUBMIT_PATH)).toHaveLength(0);
+    vi.mocked(console.error).mockRestore();
+  });
+
+  it('reports any other request the SDK refuses to send as a bad request that retrying will not fix', async () => {
+    const { call } = await import('@/lib/go/sdk/goSdkClient');
+    const { Go } = await import('@gbg/go-core');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = (await call(() =>
+      new Go().interactions.submit({ interactionAccess: 't' }, { instanceId: 42 } as never)
+    ).catch((e: unknown) => e)) as OnboardingException;
+
+    expect(error.code).toBe('BAD_REQUEST');
+    expect(error.retryable).toBe(false);
+    vi.mocked(console.error).mockRestore();
+  });
+
   it('does not mark a stage complete when the submit is not a success', async () => {
     routes[SUBMIT_PATH] = () => json(200, { status: 'queued' });
     const goClient = await client();

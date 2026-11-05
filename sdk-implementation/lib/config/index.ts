@@ -41,8 +41,37 @@ export const sessionConfig = {
   cookieName: process.env.SESSION_COOKIE_NAME ?? 'onboarding_session',
 };
 
-/** "mock" (default) needs no live Go credentials, mirroring the front end's own mock-mode requirement. Set GO_MODE=live to proxy the real GBG Go v2 API. */
-export const goMode: 'mock' | 'live' = process.env.GO_MODE === 'live' ? 'live' : 'mock';
+export type GoMode = 'mock' | 'live';
+
+const GO_MODES: GoMode[] = ['mock', 'live'];
+
+/**
+ * GO_MODE, any case. Unset is mock. Anything else is a typo — fail fast
+ * rather than quietly run mock while the tester believes they are on Go.
+ * test-scenarios is api-implementation's alone: it needs the x-gbg-scenario
+ * header on journey/start, which the SDK cannot send.
+ */
+export function parseGoMode(raw: string | undefined): GoMode {
+  if (raw === undefined || raw.trim() === '') return 'mock';
+  const mode = raw.trim().toLowerCase();
+  if (mode === 'test-scenarios') {
+    throw new Error(
+      `GO_MODE "${raw}" is not available in sdk-implementation: @gbg/go-core cannot send the x-gbg-scenario ` +
+        'header (README, "Known gaps" (k)). Use api-implementation for test scenarios.'
+    );
+  }
+  if (!GO_MODES.includes(mode as GoMode)) {
+    throw new Error(`Unknown GO_MODE "${raw}" — expected one of: ${GO_MODES.join(', ')}`);
+  }
+  return mode as GoMode;
+}
+
+/**
+ * - mock (default): canned fixtures, no credentials or network, mirroring
+ *   the front end's own mock-mode requirement.
+ * - live: the real GBG Go v2 API through @gbg/go-core.
+ */
+export const goMode: GoMode = parseGoMode(process.env.GO_MODE);
 
 /** Full API base URL, trailing slash guaranteed. Composes the documented public-platform host from region unless go.baseUrl is set explicitly. */
 export function resolveGoBaseUrl(): string {

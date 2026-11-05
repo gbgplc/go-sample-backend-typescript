@@ -171,14 +171,24 @@ export function classifyStatus(status: number): OnboardingException {
   return OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
 }
 
+/** A caller's own reading of a status Go refused with; undefined leaves it to `call`'s defaults. */
+type Refusal = (status: number) => OnboardingException | undefined;
+
 /**
  * A Go error status, with per-field errors when it is a 400/422 whose
  * problems name submitted fields. Reads the raw body, not the SDK's parsed
  * `ErrorResponse`, so it works whichever error class the body ended up in.
  */
-function classifyGoFailure(status: number, body: string, fieldsByGoPath: Record<string, string>): OnboardingException {
+function classifyGoFailure(
+  status: number,
+  body: string,
+  fieldsByGoPath: Record<string, string>,
+  refusal: Refusal
+): OnboardingException {
   const problems = goProblems(body);
   console.warn(`GBG Go call failed: ${status} ${problems || body}`);
+  const refused = refusal(status);
+  if (refused) return refused;
   if ((status === 400 || status === 422) && Object.keys(fieldsByGoPath).length > 0) {
     const fields = rejectedFields(problems, fieldsByGoPath);
     if (Object.keys(fields).length > 0) {
@@ -186,6 +196,31 @@ function classifyGoFailure(status: number, body: string, fieldsByGoPath: Record<
     }
   }
   return classifyStatus(status);
+}
+
+/** True for the SDK rejecting our own request before sending it (not a response that failed validation). */
+function isRequestValidationError(e: unknown): boolean {
+  return e instanceof SDKValidationError && !(e instanceof ResponseValidationError);
+}
+
+/**
+ * A request the SDK's schema refused before anything was sent. Sending the
+ * same input again fails the same way, so it is not reported as an outage:
+ * per-field errors where the failing paths are fields the customer typed
+ * (the same paths Go names in its own 400s), otherwise a bad request.
+ */
+function refusedBeforeSending(e: SDKValidationError, fieldsByGoPath: Record<string, string>): OnboardingException {
+  console.error('Request rejected by the SDK before sending', e.pretty());
+  const issues = (e.cause as { issues?: { path?: PropertyKey[]; message?: string }[] } | undefined)?.issues ?? [];
+  const fields: Record<string, string> = {};
+  for (const issue of issues) {
+    const field = fieldsByGoPath[(issue.path ?? []).map(String).join('.')];
+    if (field && !(field in fields)) fields[field] = issue.message ?? 'Invalid value';
+  }
+  if (Object.keys(fields).length > 0) {
+    return OnboardingException.validationFailed('Some of the details you entered could not be accepted.', fields);
+  }
+  return OnboardingException.badRequest('This request could not be sent to the verification service.');
 }
 
 /**
@@ -197,23 +232,30 @@ function classifyGoFailure(status: number, body: string, fieldsByGoPath: Record<
  * SDK's schema — a shape problem, not the customer's fault. On a 4XX it is
  * usually a Go error body the SDK's strict `ErrorResponse` schema rejected
  * (an entry missing `name` or `action`, say), which still names the fields.
+ *
+ * @param refusal consulted first once Go has refused the call, after the token retry.
  */
-export async function call<T>(request: () => Promise<T>, fieldsByGoPath: Record<string, string> = {}): Promise<T> {
+export async function call<T>(
+  request: () => Promise<T>,
+  fieldsByGoPath: Record<string, string> = {},
+  refusal: Refusal = () => undefined
+): Promise<T> {
   try {
     return await request();
   } catch (e) {
     if (e instanceof OnboardingException) throw e;
     if (e instanceof ResponseValidationError) {
-      if (e.statusCode >= 400) throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath);
+      if (e.statusCode >= 400) throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath, refusal);
       console.warn(`GBG Go response did not match the SDK's schema (${e.statusCode}): ${e.body}`);
       throw OnboardingException.upstreamUnavailable('Something went wrong on our end. Try again shortly.');
     }
     if (e instanceof GoError) {
-      throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath);
+      throw classifyGoFailure(e.statusCode, e.body, fieldsByGoPath, refusal);
     }
-    if (e instanceof SDKValidationError) {
-      console.error('Request rejected by the SDK before sending', e.pretty());
-    } else if (e instanceof HTTPClientError) {
+    if (isRequestValidationError(e)) {
+      throw refusedBeforeSending(e as SDKValidationError, fieldsByGoPath);
+    }
+    if (e instanceof HTTPClientError) {
       console.error(`Could not reach GBG Go: ${e.name}: ${e.message}`);
     } else {
       // Includes a raw SyntaxError the SDK lets escape on an empty or
@@ -356,25 +398,37 @@ function startRequest(resourceId: string, prefill: Record<string, unknown> | und
   return request;
 }
 
-/** True for the SDK rejecting our own request before sending it (not a response that failed validation). */
-function isRequestValidationError(e: unknown): boolean {
-  return e instanceof SDKValidationError && !(e instanceof ResponseValidationError);
+/**
+ * How a refused journey/start reaches the customer. There is no session yet,
+ * so `call`'s default for a 404 or 410, "Your session has ended", misleads:
+ * Go answers that way for a resourceId it doesn't have, a configuration fault
+ * that retrying can't fix. Mirrors api-implementation's startRefusal, without
+ * its test-scenario cases (README, "Known gaps" (k)).
+ */
+function startRefusal(status: number): OnboardingException | undefined {
+  if (status !== 404 && status !== 410) return undefined;
+  console.error(`GBG Go answered journey/start with ${status}. Check this market's resourceId names a published journey.`);
+  return OnboardingException.upstreamMisconfigured('Could not start your verification.');
 }
 
 async function start(request: StartJourneyRequest): Promise<string | undefined> {
-  const started = await call(async () => {
-    try {
-      return await authorized((token) => goFor(token).journeys.start(request));
-    } catch (e) {
-      // A prefill the SDK's typed subject rejects (wrong types, say) fails
-      // validation before anything is sent. Start without it rather than
-      // refusing the customer a journey.
-      if (!isRequestValidationError(e) || request.context.subject === undefined) throw e;
-      console.warn('The SDK rejected the journey prefill; starting without it', (e as SDKValidationError).pretty());
-      delete request.context.subject;
-      return authorized((token) => goFor(token).journeys.start(request));
-    }
-  });
+  const started = await call(
+    async () => {
+      try {
+        return await authorized((token) => goFor(token).journeys.start(request));
+      } catch (e) {
+        // A prefill the SDK's typed subject rejects (wrong types, say) fails
+        // validation before anything is sent. Start without it rather than
+        // refusing the customer a journey.
+        if (!isRequestValidationError(e) || request.context.subject === undefined) throw e;
+        console.warn('The SDK rejected the journey prefill; starting without it', (e as SDKValidationError).pretty());
+        delete request.context.subject;
+        return authorized((token) => goFor(token).journeys.start(request));
+      }
+    },
+    {},
+    startRefusal
+  );
   return startedInstanceId(started);
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sdkServerUrl } from '@/lib/config';
+import { parseGoMode, sdkServerUrl } from '@/lib/config';
 import { buildSdkSubmitRequest } from '@/lib/go/sdk/buildSdkSubmitRequest';
 import { authUrlProblem } from '@/lib/go/sdk/goSdkAuthService';
 import { arrivedAsUnknown, toInteractionView, toStateView } from '@/lib/go/sdk/sdkResponses';
@@ -16,6 +16,23 @@ describe('sdkServerUrl — since 0.2.0-alpha.1 @gbg/go-core paths start at /jour
 
   it("gives the configured market base URL in the SDK's own server-list form", () => {
     expect(sdkServerUrl()).toBe('https://eu.platform.go.gbgplc.com/v2/captain');
+  });
+});
+
+describe('parseGoMode', () => {
+  it('reads mock and live in any case, and unset as mock', () => {
+    expect(parseGoMode(undefined)).toBe('mock');
+    expect(parseGoMode('')).toBe('mock');
+    expect(parseGoMode('Live')).toBe('live');
+    expect(parseGoMode(' MOCK ')).toBe('mock');
+  });
+
+  it('refuses test-scenarios, which the SDK cannot start, rather than running mock', () => {
+    expect(() => parseGoMode('test-scenarios')).toThrow(/x-gbg-scenario/);
+  });
+
+  it('refuses a typo rather than running mock', () => {
+    expect(() => parseGoMode('lve')).toThrow(/Unknown GO_MODE "lve"/);
   });
 });
 
