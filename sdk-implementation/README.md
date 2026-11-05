@@ -1,7 +1,8 @@
 # Onboarding service (TypeScript) — SDK implementation
 
 One of two implementations in this repo: this one calls GBG Go v2 through the
-official TypeScript Core SDK, `@gbg/go-core` (pinned to `0.2.0`). See `../api-implementation/` for the sibling built on
+official TypeScript Core SDK, `@gbg/go-core` (`latest`; tested against
+`0.2.1`). See `../api-implementation/` for the sibling built on
 hand-rolled `fetch`, and the root `README.md` for how the two relate. Both
 serve the identical REST contract — a front end cannot tell which one it is
 talking to — and share every Go-agnostic file (`app/`, `middleware.ts`,
@@ -200,6 +201,20 @@ request body is supported.
 - (i) The token path is fixed at `/as/token.oauth2`, and `scope` is a
   one-value enum.
 - (k) No `x-gbg-scenario` header on `journeys.start`.
+
+## SDK version
+
+`package.json` asks for `@gbg/go-core@latest`, so this follows whatever the
+SDK publishes as its latest release. `package-lock.json` still records the
+exact version installed, and `npm install` keeps to it; to pick up a newer
+release, run `npm update @gbg/go-core` and commit the updated lockfile.
+
+## Upgrading to 0.2.1
+
+A drop-in upgrade from 0.2.0: no code changes, and all 95 tests pass
+unchanged. Besides the version strings, the only change is the `zod`
+dependency, narrowed from `^3.25.65 || ^4.0.0` to `^4.6.6`; this backend
+already had zod 4.6.6.
 
 ## Upgrading to 0.2.0
 
