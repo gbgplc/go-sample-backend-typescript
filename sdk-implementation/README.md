@@ -5,8 +5,15 @@ official TypeScript Core SDK, `@gbg/go-core` (`latest`; tested against
 `0.2.1`). See `../api-implementation/` for the sibling built on
 hand-rolled `fetch`, and the root `README.md` for how the two relate. Both
 serve the identical REST contract — a front end cannot tell which one it is
-talking to — and share every Go-agnostic file (`app/`, `middleware.ts`,
-`lib/dto`, `lib/session`, `lib/http`, `lib/errors`, `lib/go/mock`) unchanged.
+talking to — and share these Go-agnostic files unchanged: `app/`,
+`middleware.ts`, `lib/dto`, `lib/errors`, `lib/http`, `lib/go/mock`, and
+`lib/session` apart from two files.
+
+What differs on purpose is api-implementation's test-scenarios mode, which
+needs the `x-gbg-scenario` header the SDK cannot send (known gap (k)):
+`lib/config` has no `GO_MODE=test-scenarios` or `go.testScenario`, and
+`lib/session/session.ts`, `lib/session/sessionService.ts` and
+`lib/go/goClient.ts` carry no test scenario or "Test run" record row.
 
 The thin-proxy backend from *Market onboarding applications — front-end
 handoff*, section 1: holds the GBG Go client credentials, mints and refreshes
@@ -36,8 +43,8 @@ lib/
 app/v1/                   Route Handlers — the 7 REST endpoints (unchanged)
 ```
 
-`GoClient` has two implementations, selected by `GO_MODE`, exactly as in
-api-implementation:
+`GoClient` has two implementations, selected by `GO_MODE` (any case; any
+other value fails at startup rather than quietly running mock):
 
 - **mock** (default) — `mockGoClient`, the identical module.
 - **live** — `goSdkClient`, calling the SDK's `journeys.start`,
@@ -52,7 +59,11 @@ api-implementation:
 Every Go call has a 15-second timeout and SDK retries are off (start and
 submit are POSTs and must not be replayed). A 401/403 drops the cached token
 and retries once. A 400/422 whose Go problems name a submitted field comes
-back as a per-field validation error.
+back as a per-field validation error. A 404/410 on journey/start (a
+`resourceId` the tenant doesn't have) is a non-retryable "Could not start
+your verification", not "Your session has ended". If Go accepts a submit
+but the fetch after it fails, the submit answers with the processing
+screen, so the advance is still recorded and the front end polls on.
 
 ## Running
 
@@ -109,14 +120,19 @@ npm test
   api-implementation's mapper tests, with state fixtures nesting steps and
   journey info under `context.process`, where live Go sends them and the
   SDK keeps them.
+- `devReload.test.ts`, also identical in both folders, loads a second copy
+  of the error and session-lock modules, as a `next dev` reload does, and
+  checks the two copies still agree.
 - `goSdkClient.test.ts` runs the client through the **real SDK** against a
   fake Go (a stubbed global `fetch`). It pins the request URLs, the bearer
-  token on fetch and submit, the token mint, prefill handling, capture
-  routing, the 401 retry, per-field validation errors, status
-  classification, a non-success submit, an empty JSON body, and the full vs.
-  slim state view.
-- `sdkMapping.test.ts` covers the server-URL helper, the typed submit
-  request builder, and the response narrowing.
+  token on fetch and submit, the token mint and its lifetime, prefill
+  handling, capture routing (including the back of the document), the 401
+  retry, per-field validation errors, a refused start, a request the SDK
+  refuses to send, status classification, a non-success submit, a failed
+  fetch after an accepted submit, an empty JSON body, and the full vs. slim
+  state view.
+- `sdkMapping.test.ts` covers the server-URL helper, `GO_MODE` parsing, the
+  typed submit request builder, and the response narrowing.
 
 ## Known gaps in this SDK integration
 
@@ -132,7 +148,8 @@ alpha.0 the SDK's servers were host-only and each operation added
 through, minus its trailing slash.
 
 **(b) Fetch and submit ignore the client's token.** The global
-`customerAccess` (a token provider here) only covers `journeys.*`.
+`customerAccess` (here a plain bearer string, on a client built per call
+with the token `authorized` resolved) only covers `journeys.*`.
 `interactions.fetch` and `interactions.submit` take their own security
 object, and with nothing in it the SDK sends no `Authorization` header at
 all. The client passes `{ interactionAccess: token }` on every call.
@@ -169,7 +186,10 @@ and `body`); network failures and timeouts throw `HTTPClientError`
 subclasses; a request the SDK rejects before sending throws
 `SDKValidationError`, and `instanceof SDKValidationError` is also true for a
 `ResponseValidationError`. An empty or malformed JSON body escapes as a raw
-`SyntaxError`. `call()` in `goSdkClient.ts` handles each, in that order.
+`SyntaxError`. `call()` in `goSdkClient.ts` handles each, in that order. A
+request the SDK refuses to send is not retryable, so it is reported against
+the fields its validation issues name (the same paths Go uses in its 400s),
+or else as a `BAD_REQUEST`, never as an outage.
 
 **(g) Submit status only allows `success`.** Any other status fails the SDK's
 schema and surfaces as a `ResponseValidationError`; the stage is not marked
@@ -194,7 +214,7 @@ including base64 document and selfie images. It is not enabled here.
 no way to send the `x-gbg-scenario` header; only an inline `scenario` in the
 request body is supported.
 
-### Still worth raising with the SDK developer (as of 0.2.0)
+### Still worth raising with the SDK developer (as of 0.2.1)
 
 - (e) No catch-all on the start or submit subject.
 - (g) Submit has no in-band error code.
@@ -209,12 +229,17 @@ SDK publishes as its latest release. `package-lock.json` still records the
 exact version installed, and `npm install` keeps to it; to pick up a newer
 release, run `npm update @gbg/go-core` and commit the updated lockfile.
 
+`latest` has no upper bound, so `npm update`, or an install without the
+lockfile, can pull a new major version, such as 1.0, with breaking changes.
+After an update, run `npm test`, and check the known gaps above against the
+new release before you commit.
+
 ## Upgrading to 0.2.1
 
 A drop-in upgrade from 0.2.0: no code changes, and all 95 tests pass
 unchanged. Besides the version strings, the only change is the `zod`
-dependency, narrowed from `^3.25.65 || ^4.0.0` to `^4.6.6`; this backend
-already had zod 4.6.6.
+dependency, narrowed from `^3.25.65 || ^4.0.0` to `^4.6.6`. The lockfile
+already resolved zod to 4.6.6 under 0.2.0, so nothing else moved.
 
 ## Upgrading to 0.2.0
 
