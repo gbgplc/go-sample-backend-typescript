@@ -10,9 +10,24 @@ const ERROR_CODE_TABLE: Record<ErrorCode, { httpStatus: number; defaultRetryable
   BAD_REQUEST: { httpStatus: 400, defaultRetryable: false },
 };
 
+/**
+ * Brands every OnboardingException, across module graphs. `next dev` reloads
+ * the server's modules after a compile, but the Go client cached on
+ * globalThis (see getGoClient) keeps throwing the class from the graph it was
+ * loaded in. A plain `instanceof` against the reloaded class then misses, and
+ * a timeout's 503 reaches the customer as an unhandled 500. `Symbol.for` is
+ * the same symbol in every graph.
+ */
+const BRAND = Symbol.for('onboarding.OnboardingException');
+
 /** Carries an ErrorCode straight through to the HTTP response as the contract's error envelope. */
 export class OnboardingException extends Error {
   readonly retryable: boolean;
+  readonly [BRAND] = true;
+
+  static [Symbol.hasInstance](value: unknown): value is OnboardingException {
+    return typeof value === 'object' && value !== null && (value as { [BRAND]?: unknown })[BRAND] === true;
+  }
 
   private constructor(
     readonly code: ErrorCode,

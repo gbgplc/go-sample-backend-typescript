@@ -82,6 +82,19 @@ function recordStage(instanceId: string, stageName: string): void {
 }
 
 /**
+ * Drops the back-of-document marker once Go says Side2Done. It exists to
+ * ignore the stale Side2Required on the fetch straight after the back is
+ * submitted; kept for good, it would also ignore Go asking for the back again
+ * with the instruction alone, and send the customer to the selfie instead.
+ */
+function forgetBackOnceDone(instanceId: string, instructions: string[]): void {
+  const marker = defaultInteractionMapper.secondSideMarker();
+  if (marker && instructions.some((i) => i.toLowerCase() === 'side2done')) {
+    completedStagesByInstance.get(instanceId)?.delete(marker);
+  }
+}
+
+/**
  * Last instructions seen per instance, so a capture submit can tell the back
  * of a document from the front without an extra fetch — the same reason the
  * outstanding cache exists. Side2Required is the signal that matters.
@@ -310,6 +323,20 @@ function statusFrom(interaction: Interaction): JourneyStatus {
   return 'PendingInput';
 }
 
+/** What a submit Go accepted answers with when the fetch after it fails. The front end polls on from it. */
+function processingAfterSubmit(interactionId: string): SubmitInteractionResponse {
+  return {
+    status: 'InProgress',
+    interaction: {
+      interactionId,
+      kind: 'processing',
+      stage: 'Processing',
+      title: 'Running Identity Verification',
+      body: 'This usually takes a few seconds.',
+    },
+  };
+}
+
 async function fetchInteraction(instanceId: string): Promise<SubmitInteractionResponse> {
   const response = await call<GoInteractionFetchResponse>(() =>
     authedFetch('journey/interaction/fetch', { instanceId } satisfies GoInstanceRequest)
@@ -323,6 +350,7 @@ async function fetchInteraction(instanceId: string): Promise<SubmitInteractionRe
   // go-sample-backend-java).
   rememberOutstanding(instanceId, response.outstanding ?? []);
   rememberInstructions(instanceId, response.instructions ?? []);
+  forgetBackOnceDone(instanceId, response.instructions ?? []);
   const collectable = collectsOf(response).map((collect) => collect.ref);
   rememberCollectable(instanceId, collectable.length > 0 ? collectable : (response.outstanding ?? []));
   const interaction = defaultInteractionMapper.toInteraction(response, completedStages(instanceId));
@@ -354,9 +382,11 @@ async function resolveAttachment(
   // The back of the document, when Go has asked for it. Checked first: by
   // this point side 1 is submitted and the document stage counts as
   // completed, so the stage-based check below would read the capture as the
-  // selfie and overwrite the wrong element.
-  const instructions = lastInstructionsByInstance.get(instanceId) ?? [];
-  if (instructions.some((i) => i.toLowerCase() === 'side2required') || outstanding.includes('PrimaryDocument/side2Image')) {
+  // selfie and overwrite the wrong element. The same rule that chose the
+  // screen, so a back-of-document screen and the capture taken on it can't
+  // disagree.
+  const instructions = lastInstructionsByInstance.get(instanceId);
+  if (defaultInteractionMapper.wantsSecondSide(outstanding, instructions, completedStages(instanceId))) {
     const back = { ...data };
     delete back['attachmentRef'];
     back['documentBack'] = ref;
@@ -463,9 +493,27 @@ export const goApiClient: GoClient = {
       fieldsByGoPath(payload)
     );
     if (submittedStage) recordStage(instanceId, submittedStage);
+    // The back shares the document stage, so it is recorded separately: Go's
+    // next fetch can still say Side2Required (see side2Required).
+    const marker = defaultInteractionMapper.secondSideMarker();
+    if (marker && payload && 'documentBack' in payload) recordStage(instanceId, marker);
     // The submit response only acknowledges receipt; the next screen comes
     // from re-fetching the interaction, same as the mock's own response shape.
-    return fetchInteraction(instanceId);
+    //
+    // Go has accepted the submit by now, so a failed re-fetch must not fail
+    // it: the session would not record the advance, and the client's retry
+    // would route the same capture against progress that has already moved on
+    // (the front of a document resent as the selfie). The processing screen
+    // instead, which the front end polls on from.
+    try {
+      return await fetchInteraction(instanceId);
+    } catch (e) {
+      console.warn(
+        `GBG Go accepted the submit for instance ${instanceId}, but the fetch after it failed; answering with the processing screen`,
+        e instanceof Error ? e.message : e
+      );
+      return processingAfterSubmit(interactionId);
+    }
   },
 
   async fetchState(instanceId): Promise<StateResponse> {
